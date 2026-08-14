@@ -41,7 +41,10 @@ try:
     from starlette.applications import Starlette
     from starlette.responses import Response, JSONResponse, HTMLResponse
     from starlette.routing import Route
-    from starlette.sse import EventSourceResponse
+    try:
+        from sse_starlette.sse import EventSourceResponse  # 新版 sse-starlette
+    except ImportError:
+        from starlette.sse import EventSourceResponse  # 旧版路径兼容
     HAS_WEB = True
 except ImportError:
     HAS_WEB = False
