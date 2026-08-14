@@ -1,4 +1,15 @@
-"""Fixer 单 Agent 自我迭代引擎 —— Ralph 方法论落地。
+"""⚠️ 已归档（DEPRECATED / ARCHIVED）—— 不再参与参赛主路径。
+
+本模块基于 MAF（Microsoft Agent Framework，第三方，非比赛官方）。
+用户已拍板：参赛只用阿里官方 AgentTeams，不掺 MAF。
+Ralph 单 Agent 自我迭代逻辑，现由 AgentTeams 的 copaw 运行时在 Fixer Worker 容器内
+自行完成（AgentRunner + 校验 tool hook）；本项目侧仅保留确定性脚本
+（skills/code-gen/scripts/check-patch-integrity.py）当外部裁判。
+本文件仅保留作参考/历史对照。
+
+------------------------------------------------------------------------
+原说明：
+Fixer 单 Agent 自我迭代引擎 —— Ralph 方法论落地。
 
 来源：references/theory/SINGLE-AGENT-ITERATION.md（Geoffrey Huntley "Ralph"）
 核心思想：把 Fixer 从"一次性调 LLM 写代码"升级为"内部循环自我迭代"，
@@ -30,6 +41,9 @@ import httpx
 from agent_framework import Agent
 from agent_framework.openai import OpenAIChatCompletionClient
 from openai import AsyncOpenAI
+
+# 上下文工程
+from loop.context import ContextBudget, TokenEstimator, offload_to_file as ctx_offload
 
 
 # ------------------------------------------------------------------ #
@@ -71,12 +85,18 @@ class FixerLoop:
         - 原始任务规格
         - root-cause.md（根因分析产物）
         - 任何已有代码/上下文
+
+    上下文工程集成：
+        - 每步 prompt 走 ContextBudget 控制（8K 预算，70/30 分配）
+        - 校验结果过长时 offload 到文件，上下文只留引用
+        - 记录每步 token 消耗
     """
 
     # 硬上限（防死循环，Ralph 的"收敛靠反压，不靠无限重试"）
     MAX_STEPS = 8                 # 单次修复最多拆成 8 个原子步骤
     MAX_RETRIES_PER_STEP = 3      # 单步最多重试 3 次
     MAX_TOTAL_ITERATIONS = 20     # 总迭代上限（所有步骤 + 重试）
+    STEP_BUDGET = 8000            # 每步 prompt 的 token 预算
 
     def __init__(
         self,
@@ -244,31 +264,59 @@ class FixerLoop:
         while step.retries < self.MAX_RETRIES_PER_STEP:
             self._check_total_limit()
 
-            # --- 写代码 ---
+            # --- 上下文工程：用 ContextBudget 控制每步 prompt 大小 ---
+            budget = ContextBudget(total_budget=self.STEP_BUDGET)
+
+            # 70% critical zone：核心任务描述
+            task_header = (
+                f"你是修复工程师，正在执行修复计划的第 {step.index + 1}/{len(plan.steps)} 步。\n\n"
+                f"【修复概要】{plan.summary}\n"
+                f"【约束条件】{plan.constraints or '无特殊约束'}\n"
+                f"【当前步骤】{step.description}\n"
+                f"{'【目标文件】' + step.target_file if step.target_file else ''}\n\n"
+            )
+            budget.allocate_critical(task_header)
+
+            # 原始上下文（截断后放入 critical 区）
+            budget.allocate_critical(f"【原始上下文】\n{context[:2000]}\n\n")
+
+            # 前置步骤产出（support 区）
+            budget.allocate_support(f"【前置步骤产出】\n{prev_context[:1500]}\n\n")
+
+            # 持续调优规则（support 区）
+            if tuning_rules:
+                budget.allocate_support(tuning_rules)
+
+            # 错误反馈（上轮失败原因，support 区）
             error_context = ""
             if step.error_feedback:
                 error_context = (
                     f"\n【上轮校验失败——请修正以下问题】\n{step.error_feedback}\n"
                     f"请针对以上问题修改代码，不要引入无关改动。\n"
                 )
+                budget.allocate_support(error_context)
 
-            prompt = (
-                f"你是修复工程师，正在执行修复计划的第 {step.index + 1}/{len(plan.steps)} 步。\n\n"
-                f"【修复概要】{plan.summary}\n"
-                f"【约束条件】{plan.constraints or '无特殊约束'}\n"
-                f"【当前步骤】{step.description}\n"
-                f"{'【目标文件】' + step.target_file if step.target_file else ''}\n\n"
-                f"【原始上下文】\n{context[:3000]}\n\n"
-                f"【前置步骤产出】\n{prev_context[:2000]}\n\n"
-                f"{tuning_rules}"
-                f"{error_context}"
+            # 任务指令（critical 区）
+            task_instruction = (
                 f"请输出这一步的代码改动（用 diff 或代码块描述），只做这一步的事，不要跨步骤。\n"
                 f"完成后请标注: STEP_{step.index + 1}_DONE"
             )
+            budget.allocate_critical(task_instruction)
 
+            # 组装 prompt
+            prompt = f"{budget.critical.content}\n\n---\n\n{budget.support.content}"
+
+            # --- 写代码 ---
             agent = self._make_agent("fixer-coder", self._coder_instructions())
             code_output = await self._call_agent(agent, prompt)
             self._total_iterations += 1
+
+            # 记录 token 消耗
+            prompt_tokens = TokenEstimator.estimate(prompt)
+            output_tokens = TokenEstimator.estimate(code_output)
+            print(f"  [FixerLoop] 步骤 {step.index + 1} prompt: {prompt_tokens}t, "
+                  f"budget util: {budget.utilization:.0%}, critical: {budget.critical.used}t, "
+                  f"support: {budget.support.used}t")
 
             # --- 反压校验（Ralph 核心：客观裁判） ---
             verdict, feedback = await self._validate_step(step, plan, code_output, context)
@@ -296,13 +344,21 @@ class FixerLoop:
 
         返回 (verdict, feedback)。verdict 为 PASS / FAIL。
         """
+        # 上下文工程：代码过长时 offload 到文件
+        code_snippet = code_output
+        if TokenEstimator.estimate(code_output) > 2000:
+            offload_path = self.workdir / f"fix_step_{step.index + 1}_output.md"
+            ctx_offload(code_output, offload_path)
+            code_snippet = f"[完整代码已卸载至: {offload_path.name}]\n{code_output[:500]}..."
+            print(f"  [FixerLoop] 步骤 {step.index + 1} 代码输出 offload 到 {offload_path.name}")
+
         validate_prompt = (
             "你是代码审查员（Code Reviewer），只做客观评判，不做修改。\n\n"
             "请对以下修复步骤的代码改动做严格审查：\n\n"
             f"【修复概要】{plan.summary}\n"
             f"【当前步骤】{step.description}\n"
             f"【约束条件】{plan.constraints or '无'}\n\n"
-            f"【代码改动】\n{code_output[:4000]}\n\n"
+            f"【代码改动】\n{code_snippet}\n\n"
             "审查标准（逐项检查）：\n"
             "1. 改动是否只针对当前步骤？（跨步骤改动 = FAIL）\n"
             "2. 是否有占位实现（stub / TODO / pass / 空函数体）？（有 = FAIL）\n"

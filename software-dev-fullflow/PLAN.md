@@ -217,6 +217,40 @@
 - 产出：`design/KPI-BENCHMARK.md`（对标映射总表 + 6 条增量增强建议 + 分角色 KPI 增量总表 + 评审亮点）。
 - 增量落点：①合格度补「团队协作 + 个人成长」两维；②持续 Check-in + 目标/评估分离；③贡献度升级「影响力」三档；④治理层引入「学习成长」权重；⑤三向 360 反馈结构化；⑥评级强制分布校准。
 
+**已完成（2026-08-13 续）：Ralph 单 Agent 自我迭代落地 → FixerLoop**
+
+- 背景：评估了 Geoffrey Huntley 的 Ralph 方法论（`references/theory/SINGLE-AGENT-ITERATION.md`）是否应成为每个 Agent 的范式。
+- 结论：**Ralph 的"反压原则"是通用设计原则**（已在 Manager 层 `_verify()` 覆盖所有 Agent），**Ralph 的"迭代循环"只适合代码生成型 Agent**（目前仅 Fixer）。
+- 产出：
+  - `src/loop/fixer_loop.py`（Ralph 五大原则落地：原子步骤拆分、规格驱动、子代理校验、反压机制、持续调优。每步 写→验→修→再验 循环，单步重试 ≤3 次，总迭代 ≤20 次）
+  - `src/loop/manager.py` 接入：`_run_worker` 对 fixer 走 FixerLoop，其他 Worker 不变
+  - `src/agentteams/workers/fixer/SOUL.md` 更新为 Ralph 方法论描述
+  - `src/loop/team.py` Fixer 定义更新
+  - `src/debug_fixer.py`（独立调试脚本，构造逼真场景测试 FixerLoop）
+- 调试结果：计划生成 5 步正常；反压校验生效（第 1 轮抓占位实现，第 2 轮抓边界条件漏洞）；模型速度是瓶颈（deepseek-v4-flash 每次调用 2-4 分钟）
+- 逐 Agent 评估结论：Fixer ✅ 已实现 / Tester ⚠️ 不必（它是裁判，非代码生成者）/ RootCause ⚠️ 不必（瓶颈在搜索，应用子代理并行而非迭代）/ Aggregator ❌ 不适合 / Releaser ❌ 不适合 / Retrospector ❌ 不适合
+
+**已完成（2026-08-14 续）：Loop 迁移到 AgentTeams 原生（回答"自己写的 loop 和官方无关？"）**
+- 结论：真正与官方无关的是 **MAF 底座**（`manager.py`/`fixer_loop.py`，微软框架，用户已禁止），已摘除参赛路径并归档。
+- `agentteams_loop.py` 本就是 AgentTeams 原生（`agt` CLI 驱动真实 Worker），保留为参赛主路径。
+- 关键变更：`run.py` 入口从 MAF `TeamManagerLoop` 切换到 AgentTeams `AgentTeamsLoop`；`__init__.py` 移除 MAF 导出；确定性验证闸门（`verify_test_gate.py`/`check-patch-integrity.py`）接入 `_verify_via_agentteams` 当客观裁判。
+- 详见 `src/AGENTTEAMS-MIGRATION.md` §七。
+
 **下一步（计划第 7 项）：AgentTeams 代码包** —— 把第 1-6 项设计转成 `src/` 下的 Worker/Team/Skill YAML 声明式资源（复赛可执行代码包核心）。
 
 > 初赛临近（8.16 截止）：第 8 项初赛材料（500 字简介 + 方案 PPT）时间最紧，可优先推进。
+
+---
+
+## 待办：上下文工程（Context Engineering）落地
+
+> 来源：Anthropic《Effective context engineering for AI agents》(2025-09-29) + 已有 `references/theory/CONTEXT-ENGINEERING.md`
+> 现状：设计文档已完善（四大策略：信息卸载/压缩/按需检索/注意力操纵），但代码层零落地——Manager 和 FixerLoop 都没有 token 预算控制，上下文会随阶段累积无限膨胀。
+> 目标：把 CONTEXT-ENGINEERING.md 的四大策略落地为 `src/loop/context.py` 可调用工具函数，让每次 LLM 调用都自动控制上下文预算。
+
+| # | 任务 | 产出 | 优先级 |
+|---|------|------|:---:|
+| **ctx-1** | 创建 `src/loop/context.py` | 四个函数：`trim_context`（智能截断，保留头尾关键信息）、`compact_history`（压缩长历史为摘要）、`budget_allocate`（按 32K-64K 预算分配各部分比例）、`offload_to_file`（写入外部文件，返回引用路径） | 高 |
+| **ctx-2** | Manager Loop 接入 context.py | `_run_worker` 对 context 走 `trim_context`，防止累积上下文膨胀；system prompt 静态化以提升 prompt cache 命中 | 高 |
+| **ctx-3** | FixerLoop 接入 context.py | 每步 prompt 走 `budget_allocate` 控制预算；校验结果走 `offload` 写文件再引用，减少重复 token 消耗 | 高 |
+| **ctx-4** | 验证 | mock + API 双模式确认闭环不退化，token 消耗有可见下降 | 中 |

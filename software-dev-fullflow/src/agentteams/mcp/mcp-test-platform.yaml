@@ -1,0 +1,115 @@
+# ============================================================
+# MCP Server 模板：团队自建「测试平台」REST API → MCP 工具
+# 对齐官方 mcp-github.yaml 格式（Higress 网关用）
+# 用法：bash setup-mcp-server.sh test-platform "<YOUR_API_KEY>" --yaml-file mcp-test-platform.yaml --api-domain api.test.example.com
+# 说明：
+#   - server.config.accessToken 是统一凭据 key，脚本会替换为真实 key
+#   - tools[].requestTemplate 支持 Go template：{{.args.xxx}}、{{.config.xxx}}、{{.args.x | default "val"}} 等
+#   - 每个 tool 对应一个 REST 调用（method/url/body/headers）
+#   - 凭据通过 {{.config.accessToken}} 注入 header，Worker 看不到真实 key
+# 本模板服务对象：tester（测试验证员），作为「确定性验证闸门」的真实工具链。
+# 与 code-gen 的 mcp-code-scan.yaml 配合：fixer 扫描 → tester 跑测试 → 判定 PASS/FAIL。
+# ============================================================
+
+server:
+  name: test-platform-mcp-server
+  config:
+    accessToken: ""
+
+tools:
+- name: run_tests
+  description: 在指定仓库分支上执行测试套件，返回测试执行任务 ID（异步）
+  args:
+  - name: repo
+    type: string
+    required: true
+    description: "仓库名，如 org/repo"
+  - name: branch
+    type: string
+    required: false
+    description: "要测试的分支，默认 main"
+  - name: suite
+    type: string
+    required: false
+    description: "测试套件过滤：unit|integration|e2e，默认全跑"
+  requestTemplate:
+    url: "https://api.test.example.com/v1/runs"
+    method: POST
+    body: |
+      {
+        "repo": "{{.args.repo}}",
+        "branch": "{{.args.branch}}",
+        "suite": "{{.args.suite | default \"all\"}}"
+      }
+    headers:
+    - key: Authorization
+      value: "Bearer {{.config.accessToken}}"
+    - key: Content-Type
+      value: "application/json"
+
+- name: get_test_result
+  description: 查询指定测试执行任务的结果（用例通过/失败明细、失败断言）
+  args:
+  - name: run_id
+    type: string
+    required: true
+    description: "测试执行任务 ID（来自 run_tests）"
+  requestTemplate:
+    url: "https://api.test.example.com/v1/runs/{{.args.run_id}}"
+    method: GET
+    headers:
+    - key: Authorization
+      value: "Bearer {{.config.accessToken}}"
+
+- name: get_coverage
+  description: 查询指定仓库分支的代码覆盖率报告
+  args:
+  - name: repo
+    type: string
+    required: true
+    description: "仓库名，如 org/repo"
+  - name: branch
+    type: string
+    required: false
+    description: "分支，默认 main"
+  requestTemplate:
+    url: "https://api.test.example.com/v1/coverage?repo={{.args.repo}}&branch={{.args.branch | default \"main\"}}"
+    method: GET
+    headers:
+    - key: Authorization
+      value: "Bearer {{.config.accessToken}}"
+
+- name: run_static_analysis
+  description: 对指定仓库分支执行静态分析（lint/type-check），返回告警清单
+  args:
+  - name: repo
+    type: string
+    required: true
+    description: "仓库名，如 org/repo"
+  - name: branch
+    type: string
+    required: false
+    description: "分支，默认 main"
+  requestTemplate:
+    url: "https://api.test.example.com/v1/static-analysis"
+    method: POST
+    body: |
+      {
+        "repo": "{{.args.repo}}",
+        "branch": "{{.args.branch | default \"main\"}}"
+      }
+    headers:
+    - key: Authorization
+      value: "Bearer {{.config.accessToken}}"
+    - key: Content-Type
+      value: "application/json"
+
+# ============================================================
+# 常用 Go template 语法速查（对齐官方 mcp-github.yaml）
+#   {{.args.<name>}}                 工具参数
+#   {{.config.accessToken}}          网关存储的凭据
+#   {{.args.x | default "val"}}      缺省值
+#   {{.args.content | b64enc}}       base64 编码（上传文件类）
+#   method: GET|POST|PUT|DELETE|PATCH
+# 注意：路径参数直接拼在 url，body 用 JSON；凭据统一走 header
+# ============================================================

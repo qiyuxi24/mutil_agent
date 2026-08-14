@@ -126,6 +126,25 @@ Manager 通过 `manage-skill` + `skills/scripts/` 集中编排：**定义 → �
 
 ---
 
+## 七、工具链（MCP + scripts）分配
+
+> 工具链三层设计（copaw 内置 + MCP + Skill scripts）详见 `design/TOOLCHAIN.md`。
+> 本矩阵记录「哪个 Worker 挂哪个 MCP / 哪个 Skill 带哪个可执行脚本」，是 `workers.yaml` 中 `spec.mcpServers` 的真相源。
+
+| Worker | spec.mcpServers | 用途 | Skill scripts（可执行） |
+|--------|----------------|------|------------------------|
+| Aggregator | `github` | 拉真实 Issue/需求 | — |
+| RootCause | `github` | 读真实仓库代码/搜索/blame | — |
+| Fixer | `github` + `code-scan` | 分支/PR + 代码扫描 | `code-gen/scripts/check-patch-integrity.py` |
+| Tester | `test-platform` | 跑测试/覆盖率/静态分析 | `test-generation/scripts/verify_test_gate.py` |
+| Releaser | `ci`（可选） | 触发发布/回滚流水线 | — |
+| Retrospector | —（内置 RAG） | 写知识库 | — |
+
+> 接入机制：`scripts/register-mcp.ps1`（复用官方 `setup-mcp-server.sh`/`setup-mcp-proxy.sh`）→ Higress 网关 upsert → Consumer 授权（REPLACE）→ `mc cp` 推 MinIO → Worker `mcporter` 拉取。详见 `src/agentteams/mcp/README.md`。
+> MCP 模板：`src/agentteams/mcp/mcp-code-scan.yaml`（Fixer）、`mcp-test-platform.yaml`（Tester）；`github` 用官方内置 `mcp-github.yaml`。
+
+---
+
 ## 文档索引
 - Skill 清单（9 字段）：`SKILL-LIST.md`
 - Skill 注册表（发现层）：`REGISTRY.md`
@@ -133,3 +152,5 @@ Manager 通过 `manage-skill` + `skills/scripts/` 集中编排：**定义 → �
 - Agent 身份与动态团队：`agents/AGENT-IDENTITY.md`
 - AgentTeams 落地机制：`design/AGENTTEAMS-INTERNALS.md`
 - Skill 生命周期机制：`design/SKILL-LIFECYCLE.md`
+- 工具链三层设计：`design/TOOLCHAIN.md`
+- MCP 接入胶水层：`src/agentteams/mcp/README.md`

@@ -1,4 +1,12 @@
-"""Manager 调度 Loop —— 可运行的研发团队调度引擎。
+"""⚠️ 已归档（DEPRECATED / ARCHIVED）—— 不再参与参赛主路径。
+
+本模块基于 MAF（Microsoft Agent Framework，第三方，非比赛官方）。
+用户已拍板：参赛只用阿里官方 AgentTeams，不掺 MAF。
+本文件仅保留作参考/历史对照，参赛方案入口统一走 `loop/agentteams_loop.py`（AgentTeamsLoop）。
+
+------------------------------------------------------------------------
+原说明：
+Manager 调度 Loop —— 可运行的研发团队调度引擎。
 
 对应 design/MANAGER-LOOP-DESIGN.md：把"单 Agent ReAct"升级为"调度 ReAct"。
 Manager 不做具体编码/测试，只做调度：
@@ -7,6 +15,7 @@ Manager 不做具体编码/测试，只做调度：
 运行底座：MAF（Microsoft Agent Framework）已验证能在 DeepSeek（OpenAI 兼容）上跑通
 （见 demo/maf_sequential_deepseek.py）。这里复用 MAF 的 Agent + OpenAIChatCompletionClient，
 把我们的调度逻辑（状态机 + 里程碑 + 6 Worker）作为 Manager 的控制循环。
+------------------------------------------------------------------------
 """
 
 from __future__ import annotations
@@ -30,6 +39,7 @@ from loop.state import State, Milestone, TaskState, STATE_EXECUTOR, STATE_EXPECT
 from loop.team import get_role, DEFAULT_AGENTS  # noqa: E402
 from loop.fixer_loop import FixerLoop  # noqa: E402
 from loop.evaluation import score_team, adoption_score  # noqa: E402
+from loop.context import ContextManager, TokenEstimator  # noqa: E402
 
 
 class TeamManagerLoop:
@@ -47,6 +57,18 @@ class TeamManagerLoop:
         self.knowledge_dir = workdir / "shared" / "knowledge"
         self.state = TaskState(task_id=task_id, spec=spec)
         self.mock = mock                          # mock=True 时用确定性结果，秒级跑完完整闭环
+        # 上下文工程：ContextManager 管理预算分配 + 三层记忆 + 迭代协议
+        self.ctx = ContextManager(
+            task_id=task_id,
+            workdir=workdir,
+            total_budget=32000,  # 32K 标准窗口（Anthropic 推荐）
+        )
+        # 设置 system prompt（放入 critical 区，静态化利于 cache 命中）
+        self.ctx.set_system_prompt(
+            "你是软件研发团队的 Manager，负责调度 6 个研发 Worker 完成 PDCA 闭环。\n"
+            "你只做调度判断，不做具体编码/测试。"
+        )
+        self.ctx.set_task_spec(spec)
         # 成员评价信号采集：打回次数 / 累计耗时 / 协议合规 / 下游采纳度（喂给 score_team）
         self.reject_by_agent: dict[str, int] = {}
         self.durations_by_agent: dict[str, float] = {}
@@ -157,9 +179,10 @@ class TeamManagerLoop:
         self.state.save(self.tasks_dir / "state.json")
         print(f"\n=== Manager Loop 启动 · 任务 {self.task_id} ===")
         print(f"初始状态: {self.state.state.value}")
+        print(f"上下文预算: {self.ctx.budget.total_budget} tokens (critical 70% / support 30%)")
 
-        # 上下文累积：每阶段把上一阶段产物作为下一阶段的输入（上下文传递）
-        context = f"【原始任务】\n{self.spec}\n"
+        # 上下文累积：通过 ContextManager 管理预算
+        self.ctx.add_context(f"【原始任务】\n{self.spec}\n", zone="critical")
 
         stages_done = 0
         while stages_done < max_stages:
@@ -171,13 +194,23 @@ class TeamManagerLoop:
             expected_ms = STATE_EXPECTED_MILESTONE[stage].value
             print(f"\n[{stages_done + 1}] 阶段 {stage.value} → 执行者 {executor}（期望里程碑 {expected_ms}）")
 
+            # 上下文工程：开始新迭代周期
+            if not self.ctx.start_iteration():
+                print(f"  ⚠ 上下文预算不足，跳过阶段 {stage.value}")
+                break
+
             # 同阶段重试计数
             local_retry = 0
             while True:
                 local_retry += 1
                 t0 = time.time()
-                print(f"  → 派单给 {executor} ...")
-                worker_out = await self._run_worker(executor, expected_ms, context)
+
+                # 上下文工程：组装 prompt（走 budget 控制）
+                worker_prompt = self.ctx.assemble_prompt(
+                    current_task=f"阶段 {stage.value}，执行者 {executor}，里程碑 {expected_ms}"
+                )
+                print(f"  → 派单给 {executor}（上下文 {TokenEstimator.estimate(worker_prompt)} tokens）...")
+                worker_out = await self._run_worker(executor, expected_ms, worker_prompt)
                 elapsed = time.time() - t0
                 self.durations_by_agent[executor] = self.durations_by_agent.get(executor, 0.0) + elapsed
                 print(f"  ← {executor} 产出（{elapsed:.1f}s）：{worker_out[:120]}")
@@ -187,43 +220,63 @@ class TeamManagerLoop:
                 print(f"  校验: {verdict}")
 
                 if verdict == "PASS":
-                    # 成员评价埋点：协议合规（里程碑词 + 交接 @mention）+ 下游采纳度
-                    # 注意在追加 context 前采集，让 adoption 反映"对既有上游的采纳"
+                    # 成员评价埋点
                     role = get_role(executor)
                     milestone_ok = expected_ms in worker_out
-                    # 交接合规：有下一棒则需 @mention 交接；终态角色（无 handoff）默认合规
                     handoff_ok = (not role.handoff_to) or ("@" in worker_out) or (role.handoff_to in worker_out)
                     self.protocol_by_agent[executor] = milestone_ok and handoff_ok
-                    self.adoption_by_agent[executor] = adoption_score(worker_out, context)
+                    self.adoption_by_agent[executor] = adoption_score(worker_out, worker_prompt)
 
                     # 推进里程碑 + 状态机
                     new_state = self.state.advance(
                         STATE_EXPECTED_MILESTONE[stage],
                         verdict="PASS", detail=detail[:200], by=executor,
                     )
-                    # 落产物到 shared/tasks/{id}/
+                    # 落产物到文件
                     artifact_path = self.tasks_dir / f"{stage.value.lower()}.md"
                     artifact_path.write_text(worker_out, encoding="utf-8")
                     self.state.artifacts[stage.value] = str(artifact_path)
-                    context += f"\n[{stage.value} 产物 @{executor}]\n{worker_out[:2000]}\n"
+
+                    # 上下文工程：记录结果 + 信息卸载（大内容写入文件，上下文只留引用）
+                    context_ref = self.ctx.offload_to_file(
+                        f"# {stage.value} 产物\n\n{worker_out}",
+                        prefix=f"stage_{stage.value.lower()}"
+                    )
+                    print(f"  → 上下文卸载: {context_ref[:80]}...")
+
+                    # 上下文工程：记录迭代结果到三层记忆
+                    self.ctx.record_iteration_result(
+                        outcome=f"{stage.value} 通过 @{executor}",
+                        decisions=[{"decision": f"推进到 {new_state.value}", "justification": detail[:200]}],
+                        improvements=[],
+                        metrics={"elapsed": elapsed, "tokens": TokenEstimator.estimate(worker_prompt)},
+                    )
+
                     self.state.save(self.tasks_dir / "state.json")
                     print(f"  ✔ 里程碑 {expected_ms} 达成 → 状态 → {new_state.value}")
                     break
 
-                # 埋点：FAIL 归到当前执行者（成员评价信号）
+                # FAIL 处理
                 self.reject_by_agent[executor] = self.reject_by_agent.get(executor, 0) + 1
-                # FAIL：打回（有上限，防死循环）
                 if local_retry >= max_iter_per_stage:
                     print(f"  ✘ 阶段 {stage.value} 打回 {local_retry} 次仍失败，跳过该阶段继续（避免死循环）")
                     self.state.advance(
                         STATE_EXPECTED_MILESTONE[stage],
                         verdict="FAIL", detail=f"打回上限: {detail[:200]}", by=executor,
                     )
+                    self.ctx.record_iteration_result(
+                        outcome=f"{stage.value} 失败（打回上限）",
+                        decisions=[],
+                        improvements=[{"opportunity": f"改善 {executor} 的 {stage.value} 执行质量", "priority": "high"}],
+                    )
                     break
-                # 打回重试：带上裁判反馈让 Worker 修正
-                context += f"\n[{stage.value} 校验未过 @{executor}] {detail[:500]}\n"
+                # 打回重试：带上裁判反馈
+                feedback = f"[{stage.value} 校验未过 @{executor}] {detail[:500]}"
+                self.ctx.add_context(feedback, zone="support")
                 print(f"  → 打回 {executor} 重试（第 {local_retry} 次）：{detail[:100]}")
 
+            # 上下文工程：结束当前迭代周期
+            self.ctx.finish_iteration()
             self.state.save(self.tasks_dir / "state.json")
             stages_done += 1
 
@@ -236,7 +289,12 @@ class TeamManagerLoop:
         print(f"最终状态: {self.state.state.value}")
         print(f"里程碑: {list(self.state.milestones.keys())}")
         print(f"产物: {list(self.state.artifacts.values())}")
-        # 成员评价：汇总本次闭环采集的信号，输出团队评价报告
+
+        # 上下文工程：性能报告
+        print("\n" + self.ctx.metrics.report())
+        print(f"上下文快照: {self.ctx.snapshot()['budget']}")
+
+        # 成员评价
         evaluation = score_team(
             self.state,
             reject_counts=self.reject_by_agent,
@@ -246,7 +304,7 @@ class TeamManagerLoop:
         )
         print("\n" + evaluation.report())
 
-        # 落盘成绩单（可审计留痕）+ 输出 AgentTeams 治理命令（对接动态团队）
+        # 落盘成绩单 + 治理命令
         agents_dir = self.workdir / "shared" / "agents"
         paths = evaluation.save_scorecards(agents_dir)
         print(f"\n成绩单已落盘: {', '.join(str(p) for p in paths)}")

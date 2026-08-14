@@ -1,0 +1,66 @@
+{
+  "security": {
+    "tool_guard": {
+      "enabled": true,
+      "guarded_tools": null,
+      "denied_tools": [],
+      "custom_rules": [
+        {
+          "id": "DENY_CHMOD_777",
+          "tools": ["execute_shell_command"],
+          "params": ["command"],
+          "category": "privilege_escalation",
+          "severity": "HIGH",
+          "patterns": ["chmod\\s+777", "chmod\\s+-[a-zA-Z]*R?[a-zA-Z]*\\s+777"],
+          "exclude_patterns": [],
+          "description": "禁止对文件或目录授予全开放权限（chmod 777）",
+          "remediation": "使用最小必要权限，避免 777"
+        },
+        {
+          "id": "DENY_GIT_FORCE_PUSH",
+          "tools": ["execute_shell_command"],
+          "params": ["command"],
+          "category": "data_exfiltration",
+          "severity": "HIGH",
+          "patterns": ["git\\s+push\\s+(-f|--force)"],
+          "exclude_patterns": [],
+          "description": "禁止强制推送覆盖远程分支",
+          "remediation": "避免 --force，使用普通推送或与团队协商后 rebase"
+        },
+        {
+          "id": "DENY_DOCKER_DESTRUCTIVE",
+          "tools": ["execute_shell_command"],
+          "params": ["command"],
+          "category": "resource_abuse",
+          "severity": "HIGH",
+          "patterns": ["docker\\s+(rm|rmi|system\\s+prune|volume\\s+rm)"],
+          "exclude_patterns": [],
+          "description": "禁止删除容器/镜像/卷等 Docker 破坏性操作",
+          "remediation": "不要在 Worker 内执行 Docker 破坏性操作"
+        }
+      ],
+      "disabled_rules": []
+    },
+    "file_guard": {
+      "enabled": true,
+      "sensitive_files": [
+        ".env",
+        ".env.local",
+        ".env.production",
+        "credentials/",
+        "secrets/"
+      ]
+    },
+    "skill_scanner": {
+      "mode": "warn",
+      "timeout": 30,
+      "whitelist": [
+        { "skill_name": "file-sync", "content_hash": "", "added_at": "" },
+        { "skill_name": "code-gen", "content_hash": "", "added_at": "" },
+        { "skill_name": "test-generation", "content_hash": "", "added_at": "" },
+        { "skill_name": "git-operations", "content_hash": "", "added_at": "" },
+        { "skill_name": "evidence-log", "content_hash": "", "added_at": "" }
+      ]
+    }
+  }
+}

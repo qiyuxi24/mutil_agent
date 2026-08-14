@@ -126,3 +126,10 @@ cache/
 # ===== 学习参考资料集（第三方源码仓库 + 学习笔记，整体不入库）=====
 # 详见 references/README.md
 references/
+
+# ===== 敏感凭据 / 本地环境快照（严禁提交）=====
+scripts/controller.env
+scripts/controller-env-snapshot-*.json
+
+# ===== Office 临时锁文件 =====
+~$*.pptx
