@@ -1,0 +1,144 @@
+# ============================================================
+# MCP Server 模板：CI/CD 流水线 → MCP 工具
+# 对齐官方 mcp-github.yaml 格式（Higress 网关用）
+# 用法：bash setup-mcp-server.sh ci "<YOUR_API_KEY>" --yaml-file mcp-ci.yaml --api-domain host.docker.internal:9300
+# 说明：
+#   - 初赛使用 L1 shell 兜底执行流水线（无真实 CI 服务），本模板为复赛占位
+#   - 复赛替换为真实 CI 后端（Jenkins / GitHub Actions / GitLab CI）
+#   - server.config.accessToken 是统一凭据 key，脚本会替换为真实 key
+#   - tools[].requestTemplate 支持 Go template：{{.args.xxx}}、{{.config.xxx}} 等
+#   - 凭据通过 {{.config.accessToken}} 注入 header，Worker 看不到真实 key
+# 本模板服务对象：releaser（发布确认员），作为「发布/回滚闸门」的真实工具链。
+# 当前初赛阶段：releaser 的 L1 shell 技能可直接执行构建/发布/回滚命令，不依赖本 MCP。
+# ============================================================
+
+server:
+  name: ci-mcp-server
+  config:
+    accessToken: ""
+
+tools:
+- name: trigger_pipeline
+  description: 触发 CI/CD 流水线执行（构建 → 测试 → 部署），返回流水线运行 ID
+  args:
+  - name: repo
+    type: string
+    required: true
+    description: "仓库名，如 org/repo"
+  - name: branch
+    type: string
+    required: false
+    description: "要构建的分支，默认 main"
+  - name: stage
+    type: string
+    required: false
+    description: "流水线阶段：build|test|deploy|full，默认 full（全流程）"
+  requestTemplate:
+    url: "http://host.docker.internal:9300/v1/pipelines"
+    method: POST
+    body: |
+      {
+        "repo": "{{.args.repo}}",
+        "branch": "{{.args.branch | default \"main\"}}",
+        "stage": "{{.args.stage | default \"full\"}}"
+      }
+    headers:
+    - key: Authorization
+      value: "Bearer {{.config.accessToken}}"
+    - key: Content-Type
+      value: "application/json"
+
+- name: get_pipeline_status
+  description: 查询指定流水线的运行状态与阶段进度
+  args:
+  - name: pipeline_id
+    type: string
+    required: true
+    description: "流水线运行 ID（来自 trigger_pipeline）"
+  requestTemplate:
+    url: "http://host.docker.internal:9300/v1/pipelines/{{.args.pipeline_id}}"
+    method: GET
+    headers:
+    - key: Authorization
+      value: "Bearer {{.config.accessToken}}"
+
+- name: get_build_log
+  description: 获取流水线中指定阶段的构建/测试日志
+  args:
+  - name: pipeline_id
+    type: string
+    required: true
+    description: "流水线运行 ID（来自 trigger_pipeline）"
+  - name: stage
+    type: string
+    required: true
+    description: "流水线阶段：build|test|deploy"
+  requestTemplate:
+    url: "http://host.docker.internal:9300/v1/pipelines/{{.args.pipeline_id}}/logs/{{.args.stage}}"
+    method: GET
+    headers:
+    - key: Authorization
+      value: "Bearer {{.config.accessToken}}"
+
+- name: approve_deploy
+  description: 审批通过部署请求，允许流水线进入生产发布阶段
+  args:
+  - name: pipeline_id
+    type: string
+    required: true
+    description: "流水线运行 ID（来自 trigger_pipeline）"
+  - name: environment
+    type: string
+    required: false
+    description: "目标环境：staging|production，默认 production"
+  requestTemplate:
+    url: "http://host.docker.internal:9300/v1/pipelines/{{.args.pipeline_id}}/approve"
+    method: POST
+    body: |
+      {
+        "environment": "{{.args.environment | default \"production\"}}"
+      }
+    headers:
+    - key: Authorization
+      value: "Bearer {{.config.accessToken}}"
+    - key: Content-Type
+      value: "application/json"
+
+- name: rollback_deploy
+  description: 触发回滚，将指定环境回退到上一个稳定版本
+  args:
+  - name: repo
+    type: string
+    required: true
+    description: "仓库名，如 org/repo"
+  - name: environment
+    type: string
+    required: false
+    description: "目标环境：staging|production，默认 production"
+  - name: version
+    type: string
+    required: false
+    description: "回滚到的目标版本号，不指定则回退到上一个稳定版本"
+  requestTemplate:
+    url: "http://host.docker.internal:9300/v1/rollbacks"
+    method: POST
+    body: |
+      {
+        "repo": "{{.args.repo}}",
+        "environment": "{{.args.environment | default \"production\"}}",
+        "version": "{{.args.version | default \"\"}}"
+      }
+    headers:
+    - key: Authorization
+      value: "Bearer {{.config.accessToken}}"
+    - key: Content-Type
+      value: "application/json"
+
+# ============================================================
+# 常用 Go template 语法速查（对齐官方 mcp-github.yaml）
+#   {{.args.<name>}}                 工具参数
+#   {{.config.accessToken}}          网关存储的凭据
+#   {{.args.x | default "val"}}      缺省值
+#   method: GET|POST|PUT|DELETE|PATCH
+# 注意：路径参数直接拼在 url，body 用 JSON；凭据统一走 header
+# ============================================================

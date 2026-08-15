@@ -1,5 +1,9 @@
 # Demo：Microsoft Agent Framework（MAF）多 Agent 协同跑起来
 
+> ⚠️ **本文档及本目录下的 `maf_*.py` / `OFFICIAL-MAF-GUIDANCE.md` 仅作「选型对比参考」，非参赛实现。**
+> 参赛协同基点为阿里官方 **AgentTeams**，本项目实现全部以 AgentTeams 为主（见 `src/loop/agentteams_*.py`）。
+> MAF 内容仅用于说明「为何选 AgentTeams 而非 MAF」，不作评审可运行实现的一部分。
+
 本目录演示如何把 MAF 官方案例「改一改」就能用 **DeepSeek**（OpenAI 兼容协议）在本地跑起来，
 让你直观看到多 Agent 协同的效果。
 

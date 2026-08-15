@@ -1,0 +1,23 @@
+kind: entity_set_link
+schema:
+  url: "umodel.aliyun.com"
+  version: "v0.1.0"
+metadata:
+  name: "dev.retrospective_enriches_dev.task"
+  domain: dev
+  display_name:
+    en_us: "Retrospective Enriches Task"
+    zh_cn: "复盘沉淀反哺任务"
+  description:
+    en_us: "A retrospective enriches future tasks, feeding distilled knowledge back into the loop."
+    zh_cn: "复盘沉淀反哺未来任务，把沉淀的知识回灌进闭环。"
+spec:
+  src:
+    domain: dev
+    kind: entity_set
+    name: dev.retrospective
+  dest:
+    domain: dev
+    kind: entity_set
+    name: dev.task
+  entity_link_type: enriches

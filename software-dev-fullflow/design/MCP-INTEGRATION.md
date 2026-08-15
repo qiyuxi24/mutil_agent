@@ -67,9 +67,19 @@
 |------|------|:---:|
 | `design/MCP-INTEGRATION.md` | 本方案文档 | ✅ 本文 |
 | `src/agentteams/mcp/mcp-code-scan.yaml` | 示例：把自建代码扫描 REST API 包装成 MCP 工具 | ✅ |
-| `scripts/register-mcp.ps1` | 一键注册 MCP Server + 授权 Worker（封装官方脚本） | ✅ |
-| `src/agentteams/workers.yaml` | 给 fixer/tester 等挂 `mcpServers` | ✅ |
+| `scripts/register-mcp.ps1` | 一键注册自定义 MCP Server + 授权 Worker（封装官方脚本） | ✅ |
+| `scripts/add-toolchains.ps1` | 预置常用工具链（github + websearch） | ✅ |
+| `src/agentteams/workers.yaml` | Worker 声明式 `mcpServers` 挂载（github/websearch 已挂） | ✅ |
 | `src/agentteams/mcp/README.md` | 团队接入指南（怎么加新工具） | ✅ |
+
+### 已预置工具链（2026-08-15）
+
+| Server | 类型 | 挂载 Worker |
+|--------|------|-------------|
+| `github` | GitHub 官方 MCP（官方内置模板 + PAT） | aggregator / rootcause / fixer |
+| `websearch` | 网页搜索 MCP（代理模式） | aggregator / rootcause |
+
+> 待办：占位工具链 `code-scan`(fixer)、`test-platform`(tester)、`ci`(releaser) 需接入真实服务；`websearch` 端点需按团队可用搜索服务调整。
 
 ---
 
@@ -87,8 +97,27 @@
 
 ---
 
-## 5. 下一步（待办）
+## 5. 实测验证（2026-08-15）
 
-- [ ] 按需为具体工具链（如 CI/CD、代码评审）写对应 `mcp-<name>.yaml`
-- [ ] 在真实环境验证 `register-mcp.ps1` 端到端（建 server → 授权 → mcporter 调用）
-- [ ] 把验证结果回填本文档「实测」章节
+> 在真实环境验证了接入链路，**纠正了一个关键前提**：
+
+- **正确执行容器是 `agentteams-controller`**（Higress 控制台 8001 映射在 controller 容器内），**不是** manager。
+- **必须先登录 Higress 拿 cookie**：`source gateway-api.sh; gateway_ensure_session()`（用 `AGENTTEAMS_ADMIN_USER/PASSWORD` 登录 `127.0.0.1:8001/session/login`，写入 `HIGRESS_COOKIE_FILE`）。已验证返回 `LOGIN_OK`（cookie 241B）。
+- 官方脚本 `setup-mcp-server.sh` / `setup-mcp-proxy.sh` 在 controller 容器内存在且参数解析正常（空凭据会正确进入 usage 校验）。
+- 环境为 **k8s 模式**（`AGENTTEAMS_RUNTIME=k8s`），非 docker 模式。
+
+**结论**：`register-mcp.ps1` / `add-toolchains.ps1` 已改为「controller 容器 + 先登录」引导。真实注册 GitHub MCP 需用户提供有效 PAT 后执行：
+
+```powershell
+.\scripts\add-toolchains.ps1 -GithubToken "ghp_xxx"
+```
+
+---
+
+## 6. 下一步（待办）
+
+- [ ] 提供有效 GitHub PAT，执行 `add-toolchains.ps1 -GithubToken <PAT>` 真实注册 github MCP
+- [ ] 配置可用搜索服务（Tavily key 或换公开端点），执行 `-EnableSearch` 接 websearch
+- [ ] 注册后验证：`docker exec agentteams-worker-<name> mcporter list github --schema`
+- [ ] 接入占位工具链：`code-scan`(fixer)、`test-platform`(tester)、`ci`(releaser)
+- [ ] 更新 README/MCP-INTEGRATION 回填实测结果

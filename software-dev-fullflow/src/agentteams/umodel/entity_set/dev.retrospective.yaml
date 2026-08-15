@@ -1,0 +1,51 @@
+kind: entity_set
+schema:
+  url: "umodel.aliyun.com"
+  version: "v0.1.0"
+metadata:
+  name: "dev.retrospective"
+  domain: dev
+  display_name:
+    en_us: "Retrospective"
+    zh_cn: "复盘沉淀"
+  description:
+    en_us: "A knowledge entry produced by the Retrospector (maps shared/knowledge/{id}.md)."
+    zh_cn: "由复盘沉淀员产出的知识条目（映射 shared/knowledge/{id}.md）。"
+spec:
+  fields:
+    - name: id
+      type: string
+      display_name: { en_us: "ID", zh_cn: "ID" }
+      description: { en_us: "Stable knowledge entry identifier.", zh_cn: "稳定知识条目标识。" }
+    - name: type
+      type: string
+      display_name: { en_us: "Type", zh_cn: "类型" }
+      description: { en_us: "Entry type (bug-fix/lesson/pattern).", zh_cn: "条目类型。" }
+    - name: root_cause
+      type: string
+      display_name: { en_us: "Root Cause", zh_cn: "根因" }
+      description: { en_us: "Underlying root cause.", zh_cn: "潜在根因。" }
+    - name: solution
+      type: string
+      display_name: { en_us: "Solution", zh_cn: "解法" }
+      description: { en_us: "Applied solution.", zh_cn: "采用的解法。" }
+    - name: verification
+      type: string
+      display_name: { en_us: "Verification", zh_cn: "验证" }
+      description: { en_us: "How the fix was verified.", zh_cn: "修复如何被验证。" }
+    - name: tags
+      type: json
+      display_name: { en_us: "Tags", zh_cn: "标签" }
+      description: { en_us: "Search tags for RAG retrieval.", zh_cn: "用于 RAG 检索的标签。" }
+    - name: reusability
+      type: string
+      display_name: { en_us: "Reusability", zh_cn: "可复用性" }
+      description: { en_us: "Applicable scope of this lesson.", zh_cn: "该经验教训的适用范围。" }
+  primary_key_fields:
+    - id
+  id_generator: "id"
+  name_fields:
+    - id
+  ordered_fields: ["id", "type", "root_cause", "solution", "verification", "reusability"]
+  first_observed_time_field: "__first_observed_time__"
+  last_observed_time_field: "__last_observed_time__"

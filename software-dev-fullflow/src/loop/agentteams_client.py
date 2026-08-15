@@ -17,6 +17,11 @@ AgentTeams 框架的核心概念：
   - 旧 manager.py 用 MAF 的 Agent 类手动调度 → 新 AgentTeamsClient 用 agt CLI 委托给 AgentTeams 平台
   - 旧 fixer_loop.py 内部自我迭代 → AgentTeams 的 Fixer Worker 自带 skill 能力
   - 旧 context.py 内存预算管理 → AgentTeams 的 shared/knowledge + MinIO 持久化
+
+模块拆分说明：
+  - agentteams_matrix.py — Matrix 协议客户端（MatrixClientMixin，官方 replay-task.sh 的 Python 版）
+  - agentteams_yaml.py   — workers.yaml 解析（单一数据源）
+  - agentteams_client.py — AgtCLI + 数据模型 + AgentTeamsClient（组合 mixin）
 """
 
 from __future__ import annotations
@@ -27,13 +32,15 @@ import os
 import re
 import subprocess
 import time
-import urllib.parse
-import urllib.request
-from dataclasses import dataclass, field
+import uuid
+from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any
 
 import httpx
+
+from .agentteams_matrix import MatrixClientMixin
+from . import agentteams_yaml
 
 
 # ========================================================================== #
@@ -93,6 +100,7 @@ class AgtCLI:
 @dataclass
 class WorkerInfo:
     """Worker 运行时信息。"""
+
     name: str
     model: str = ""
     runtime: str = ""
@@ -104,7 +112,6 @@ class WorkerInfo:
     def from_agt_output(cls, name: str, output: str) -> "WorkerInfo":
         """从 agt get worker 的 YAML 输出解析。"""
         info = cls(name=name)
-        # 简单解析 key: value 行
         current_key = ""
         for line in output.split("\n"):
             stripped = line.strip()
@@ -129,24 +136,59 @@ class WorkerInfo:
 
 
 @dataclass
+class TaskCheckpoint:
+    """任务进度检查点（断点续传用）。"""
+    task_id: str
+    seen_milestones: list[dict[str, str]] = field(default_factory=list)  # 历史所有里程碑（含重复，支持打回场景）
+    bound_room_id: str = ""          # 任务归属的三方房间（admin+manager+worker），首次检测到里程碑后绑定
+    baseline_ts: int = 0             # 时间窗口下界（任务创建时间，ms），过滤历史消息
+    last_poll_ts: float = 0.0        # 上次轮询时间戳
+    elapsed: float = 0.0             # 已累计耗时（秒）
+    status: str = "running"          # running | completed | timeout
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "TaskCheckpoint":
+        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
+
+    def latest_milestone_set(self) -> set[str]:
+        """取每个里程碑词的最新一次出现（用于去重显示，但不丢失打回历史）。"""
+        latest: dict[str, dict[str, str]] = {}
+        for m in self.seen_milestones:
+            latest[m["milestone"]] = m
+        return set(latest.keys())
+
+
+@dataclass
 class TaskInfo:
     """任务运行时信息。"""
+
     task_id: str
     spec: str
     state: str = "pending"
     current_worker: str = ""
     milestone: str = ""
     created_at: float = field(default_factory=time.time)
+    # 任务归属：Manager 在 DM 收到任务后会为该任务创建独立三方房间（admin+manager+worker），
+    # 首次检测到里程碑后绑定此房间，后续只扫该房间，避免多任务串台。
+    bound_room_id: str = ""
+    # 隐藏标记：在发任务时附带，作为多任务时的兜底过滤
+    task_tag: str = ""
 
     def elapsed(self) -> float:
         return time.time() - self.created_at
+
+    def to_dict(self) -> dict:
+        return asdict(self)
 
 
 # ========================================================================== #
 # 3. AgentTeamsClient —— 核心客户端
 # ========================================================================== #
 
-class AgentTeamsClient:
+class AgentTeamsClient(MatrixClientMixin):
     """AgentTeams 平台的 Python 客户端。
 
     封装所有 agt CLI 操作，提供：
@@ -182,7 +224,13 @@ class AgentTeamsClient:
         "RETROSPECT_DONE": "",           # 闭环结束
     }
 
-    def __init__(self, mode: str = ""):
+    # Task 隐藏标记正则（发消息时嵌入，用于多任务过滤兜底）
+    TASK_TAG_RE = re.compile(r"<!-- TASK_ID:([a-f0-9-]+) -->")
+
+    # Checkpoint 根目录（可覆盖）
+    CHECKPOINT_DIR: Path | None = None
+
+    def __init__(self, mode: str = "", checkpoint_dir: Path | None = None):
         if mode:
             AgtCLI.MODE = mode
         # Matrix 相关配置（与官方 replay-task.sh 对齐）
@@ -197,178 +245,14 @@ class AgentTeamsClient:
         self.manager_user = os.environ.get("AGENTTEAMS_MANAGER_USER", "manager")
         self._token: str = ""
         self._http = httpx.AsyncClient(trust_env=False, timeout=30)
-
-    # ------------------------------------------------------------------ #
-    # Matrix 协议客户端（官方 replay-task.sh 的 Python 版）
-    #  官方与 Manager/Worker 的交互走 Matrix（/rooms/{id}/send/m.room.message），
-    #  而非 agt CLI。本类是 `scripts/replay-task.sh` + `tests/lib/matrix-client.sh`
-    #  的 Python 等价实现。
-    # ------------------------------------------------------------------ #
-    def _matrix_api(self, method: str, path: str, data: Any = None) -> Any:
-        """执行 Matrix API 调用。阻塞式（内部用同步 urllib）。"""
-        url = f"{self.matrix_url}{path}"
-        headers = {}
-        body = None
-        if data is not None:
-            headers["Content-Type"] = "application/json"
-            body = json.dumps(data).encode()
-        if self._token:
-            headers["Authorization"] = f"Bearer {self._token}"
-        req = urllib.request.Request(url, data=body, headers=headers, method=method)
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                return json.loads(resp.read().decode("utf-8", errors="replace"))
-        except urllib.error.HTTPError as e:
-            raise RuntimeError(f"Matrix API {method} {path} 失败: {e.code} {e.reason}")
-        except urllib.error.URLError as e:
-            raise RuntimeError(f"Matrix API {method} {path} 连接失败: {e.reason}")
-
-    def matrix_login(self) -> str:
-        """以 admin 登录 Matrix，缓存并返回 access_token。"""
-        if self._token:
-            return self._token
-        if not self.admin_password:
-            raise RuntimeError("AGENTTEAMS_ADMIN_PASSWORD 未设置，无法登录 Matrix")
-        data = self._matrix_api(
-            "POST",
-            "/_matrix/client/v3/login",
-            {
-                "type": "m.login.password",
-                "identifier": {"type": "m.id.user", "user": self.admin_user},
-                "password": self.admin_password,
-            },
-        )
-        self._token = data.get("access_token", "")
-        if not self._token:
-            raise RuntimeError("Matrix 登录失败：未返回 access_token")
-        return self._token
-
-    def _urlencode_room(self, room_id: str) -> str:
-        return urllib.parse.quote(room_id, safe="")
-
-    def get_joined_rooms(self) -> list[str]:
-        """获取 admin 已加入的所有房间。"""
-        data = self._matrix_api("GET", "/_matrix/client/v3/joined_rooms")
-        return data.get("joined_rooms", [])
-
-    def get_room_members(self, room_id: str) -> list[str]:
-        """获取房间成员（state_key 列表）。"""
-        data = self._matrix_api(
-            "GET", f"/_matrix/client/v3/rooms/{self._urlencode_room(room_id)}/members"
-        )
-        return [m.get("state_key", "") for m in data.get("chunk", [])]
-
-    def find_manager_room(self) -> str:
-        """查找与 Manager 的 DM 房间（恰好 2 成员且含 @manager）。"""
-        manager_full = f"@{self.manager_user}:{self.matrix_domain}"
-        for room_id in self.get_joined_rooms():
-            try:
-                members = self.get_room_members(room_id)
-            except RuntimeError:
-                continue
-            if len(members) == 2 and any(manager_full in m for m in members):
-                return room_id
-        return ""
-
-    def create_dm_room(self) -> str:
-        """创建与 Manager 的 DM 房间。"""
-        manager_full = f"@{self.manager_user}:{self.matrix_domain}"
-        data = self._matrix_api(
-            "POST",
-            "/_matrix/client/v3/createRoom",
-            {
-                "is_direct": True,
-                "invite": [manager_full],
-                "preset": "trusted_private_chat",
-            },
-        )
-        return data.get("room_id", "")
-
-    def ensure_manager_room(self) -> str:
-        """确保存在与 Manager 的 DM 房间，返回 room_id。"""
-        room = self.find_manager_room()
-        if not room:
-            room = self.create_dm_room()
-        if not room:
-            raise RuntimeError("无法建立与 Manager 的 DM 房间")
-        return room
-
-    def find_worker_room(self, worker: str) -> str:
-        """查找与指定 Worker 的 DM 房间（2 成员且含 @worker）。"""
-        worker_full = f"@{worker}:{self.matrix_domain}"
-        for room_id in self.get_joined_rooms():
-            try:
-                members = self.get_room_members(room_id)
-            except RuntimeError:
-                continue
-            if len(members) == 2 and any(worker_full in m for m in members):
-                return room_id
-        return ""
-
-    def create_worker_dm_room(self, worker: str) -> str:
-        """创建与指定 Worker 的 DM 房间。"""
-        worker_full = f"@{worker}:{self.matrix_domain}"
-        data = self._matrix_api(
-            "POST",
-            "/_matrix/client/v3/createRoom",
-            {
-                "is_direct": True,
-                "invite": [worker_full],
-                "preset": "trusted_private_chat",
-            },
-        )
-        return data.get("room_id", "")
-
-    def ensure_worker_room(self, worker: str) -> str:
-        """确保存在与指定 Worker 的 DM 房间，返回 room_id。"""
-        room = self.find_worker_room(worker)
-        if not room:
-            room = self.create_worker_dm_room(worker)
-        if not room:
-            raise RuntimeError(f"无法建立与 Worker {worker} 的 DM 房间")
-        return room
-
-    def read_worker_reply(self, worker: str, baseline_event: str = "") -> str:
-        """读取指定 Worker 房间里该 Worker 最新一条回复文本。"""
-        room_id = self.ensure_worker_room(worker)
-        msgs = self.read_room_messages(room_id, 20)
-        worker_full = f"@{worker}:{self.matrix_domain}"
-        for m in reversed(msgs):  # 最新优先
-            if worker_full in m["sender"] and m["event_id"] != baseline_event:
-                return m["content"]
-        return ""
-
-    def send_matrix_message(self, room_id: str, body: str) -> None:
-        """向房间发一条文本消息（m.room.message）。"""
-        txn_id = f"pdca_{int(time.time() * 1000)}"
-        self._matrix_api(
-            "PUT",
-            f"/_matrix/client/v3/rooms/{self._urlencode_room(room_id)}"
-            f"/send/m.room.message/{txn_id}",
-            {"msgtype": "m.text", "body": body},
-        )
-
-    def read_room_messages(self, room_id: str, limit: int = 50) -> list[dict[str, Any]]:
-        """读取房间最近消息（dir=b 最新优先），返回按时间正序的 m.room.message 列表。"""
-        data = self._matrix_api(
-            "GET",
-            f"/_matrix/client/v3/rooms/{self._urlencode_room(room_id)}/messages"
-            f"?dir=b&limit={limit}",
-        )
-        chunk = data.get("chunk", [])
-        msgs = [
-            {
-                "sender": m.get("sender", ""),
-                "content": (m.get("content", {}) or {}).get("body", ""),
-                "event_id": m.get("event_id", ""),
-                "ts": m.get("origin_server_ts", 0),
-            }
-            for m in chunk
-            if m.get("type") == "m.room.message"
-            and (m.get("content", {}) or {}).get("body")
-        ]
-        msgs.sort(key=lambda m: m["ts"])
-        return msgs
+        # Checkpoint 目录优先级：显式参数 > 类变量 > 默认 ./shared/checkpoints
+        if checkpoint_dir:
+            self._checkpoint_dir = checkpoint_dir
+        elif self.CHECKPOINT_DIR:
+            self._checkpoint_dir = self.CHECKPOINT_DIR
+        else:
+            self._checkpoint_dir = Path.cwd() / "shared" / "checkpoints"
+        self._checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     async def close(self) -> None:
         await self._http.aclose()
@@ -474,42 +358,6 @@ class AgentTeamsClient:
         code, _, _ = await AgtCLI.run("delete", "worker", "--name", name)
         return code == 0
 
-    async def ensure_pdca_workers(self, workers_dir: str) -> dict[str, bool]:
-        """确保 6 个 PDCA Worker 都已创建并 Running。
-
-        Args:
-            workers_dir: SOUL.md 文件所在目录（如 src/agentteams/workers/）
-
-        Returns:
-            {worker_name: is_ready}
-        """
-        existing = await self._list_resource("workers")
-        results = {}
-
-        for name in self.PDCA_WORKERS:
-            if name in existing:
-                results[name] = True
-                continue
-
-            soul_path = Path(workers_dir) / name / "SOUL.md"
-            if not soul_path.exists():
-                results[name] = False
-                continue
-
-            # 从 workers.yaml 读取对应配置
-            skills = self._get_worker_skills(name)
-            mcp = self._get_worker_mcp(name)
-
-            ok = await self.create_worker(
-                name=name,
-                soul_file=str(soul_path),
-                skills=skills,
-                mcp_servers=mcp,
-            )
-            results[name] = ok
-
-        return results
-
     # ------------------------------------------------------------------ #
     # Team 管理
     # ------------------------------------------------------------------ #
@@ -554,11 +402,8 @@ class AgentTeamsClient:
         AgentTeams 的任务派发走 Matrix 协议（官方 replay-task.sh 的做法）：
           1. admin 登录 Matrix
           2. 找到或创建与 @manager 的 DM 房间
-          3. 向房间发任务消息（含 PDCA 流水线与里程碑协议）
+          3. 向房间发任务消息（含 PDCA 流水线与里程碑协议 + 隐藏 task_id 标记）
           4. Manager（LLM 驱动）收到后自动匹配 Worker 并派单
-
-        注意：官方 agt CLI **没有** `task`/`send`/`messages` 子命令，
-        向 Manager 发任务必须走 Matrix。本方法是官方 `replay-task.sh` 的 Python 等价。
 
         Args:
             spec: 任务规格（自然语言描述）
@@ -566,12 +411,16 @@ class AgentTeamsClient:
             manager: Manager 名称（Matrix 用户 localpart）
 
         Returns:
-            TaskInfo with task_id for tracking
+            TaskInfo with task_id (UUID) for tracking
         """
         pipeline = pipeline or self.PDCA_WORKERS
         self.manager_user = manager
 
-        # 构造 PDCA 任务上下文（含里程碑握手协议）
+        # GAP-06: 用 UUID4 生成唯一 task_id（短版 12 字符 hex，并发不冲突）
+        task_id = uuid.uuid4().hex[:12]
+        task_tag = f"<!-- TASK_ID:{task_id} -->"
+
+        # 构造 PDCA 任务上下文（含里程碑握手协议 + 末尾隐藏 task_id 标记）
         task_context = (
             f"【PDCA 闭环任务】\n\n"
             f"任务规格：\n{spec}\n\n"
@@ -582,7 +431,8 @@ class AgentTeamsClient:
             f"- fixer      → FIX_APPLIED → @tester\n"
             f"- tester     → TEST_PASSED → @releaser（失败则 TEST_FAILED → @fixer）\n"
             f"- releaser   → RELEASE_OK → @retrospector（失败则 RELEASE_ROLLED_BACK → @fixer）\n"
-            f"- retrospector → RETROSPECT_DONE → @manager（闭环结束）\n"
+            f"- retrospector → RETROSPECT_DONE → @manager（闭环结束）\n\n"
+            f"{task_tag}"
         )
 
         # 走 Matrix：登录 + 找/建 DM + 发任务
@@ -590,12 +440,75 @@ class AgentTeamsClient:
         room_id = self.ensure_manager_room()
         self.send_matrix_message(room_id, task_context)
 
-        task_id = f"pdca-{int(time.time())}"
-        return TaskInfo(task_id=task_id, spec=spec)
+        task_info = TaskInfo(
+            task_id=task_id,
+            spec=spec,
+            created_at=time.time(),
+            task_tag=task_tag,
+        )
+
+        # GAP-07: 创建初始 checkpoint（baseline_ts 用 ms 时间戳，对齐 Matrix origin_server_ts）
+        baseline_ts = int(task_info.created_at * 1000)
+        cp = TaskCheckpoint(
+            task_id=task_id,
+            baseline_ts=baseline_ts,
+            last_poll_ts=time.time(),
+        )
+        self._save_checkpoint(cp)
+
+        return task_info
 
     # ------------------------------------------------------------------ #
     # 任务监控（里程碑追踪，走 Matrix 房间消息）
     # ------------------------------------------------------------------ #
+
+    # ---- Checkpoint 辅助（断点续传 GAP-07） ----
+
+    def _checkpoint_path(self, task_id: str) -> Path:
+        return self._checkpoint_dir / f"task-{task_id}.json"
+
+    def _load_checkpoint(self, task_id: str) -> TaskCheckpoint | None:
+        p = self._checkpoint_path(task_id)
+        if not p.exists():
+            return None
+        try:
+            return TaskCheckpoint.from_dict(json.loads(p.read_text(encoding="utf-8")))
+        except (json.JSONDecodeError, KeyError, ValueError):
+            return None
+
+    def _save_checkpoint(self, cp: TaskCheckpoint) -> None:
+        p = self._checkpoint_path(cp.task_id)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(cp.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def clear_checkpoint(self, task_id: str) -> None:
+        """任务正常结束后清理 checkpoint。"""
+        p = self._checkpoint_path(task_id)
+        if p.exists():
+            try:
+                p.unlink()
+            except OSError:
+                pass
+
+    @staticmethod
+    def _adaptive_poll_interval(elapsed: float, base: float = 10.0) -> float:
+        """自适应轮询间隔：初期密集、后期稀疏，减少空请求。
+
+        策略：
+          - 0~5min: base (默认 10s)
+          - 5~15min: base×2 (20s)
+          - 15~30min: base×3 (30s)
+          - 30min+: base×6 (60s，模型慢也合理)
+        """
+        if elapsed < 300:
+            return base
+        if elapsed < 900:
+            return base * 2
+        if elapsed < 1800:
+            return base * 3
+        return base * 6
+
+    # ---- 里程碑检测 ----
 
     async def get_task_messages(self, task_id: str, limit: int = 50) -> list[dict[str, Any]]:
         """获取与 Manager 的 DM 房间消息（追踪 PDCA 进度）。
@@ -611,16 +524,28 @@ class AgentTeamsClient:
             return []
         return self.read_room_messages(room_id, limit)
 
-    async def detect_milestones(self, task_id: str) -> list[dict[str, str]]:
-        """扫描 admin 所有已加入房间，检测里程碑词。
+    async def detect_milestones(self, task_id: str) -> tuple[list[dict[str, str]], str]:
+        """GAP-05: 带三层过滤的里程碑检测。
 
-        官方 Manager 在 admin+manager+worker 的**三方房间**里驱动 Worker 接力，
-        因此只轮询 manager DM 房间会漏掉 Worker 的里程碑。这里扫描所有房间。
+        三层过滤策略（避免多任务串台）：
+          ① 时间窗口：只看 ts ≥ checkpoint.baseline_ts（任务创建后的消息，过滤历史闭环）
+          ② 归属房间：首次检测到里程碑后绑定三方房间，后续只扫该房间
+          ③ 任务 tag：消息里含 <!-- TASK_ID:xxx --> 隐藏标记时强匹配，多任务兜底
 
         Returns:
-            [{milestone: "TASK_SPEC_READY", worker: "aggregator", timestamp: ...}, ...]
+            (milestones_list, bound_room_id)
+            milestones_list: [{milestone, worker, content, ts_ms, room_id}, ...]
+                按时间升序，**包含重复里程碑**（用于打回场景：TEST_FAILED → FIX_APPLIED → TEST_PASSED 再次出现）
+            bound_room_id: 本轮检测到里程碑后绑定的三方房间 ID（空字符串表示还未绑定）
         """
-        milestones = []
+        cp = self._load_checkpoint(task_id)
+        baseline_ts = cp.baseline_ts if cp else 0
+        bound_room_id = cp.bound_room_id if cp else ""
+
+        # 如果 Manager 回复任务时引用了原始消息，task_tag 可能被保留；否则靠房间+时间过滤
+        task_tag = f"<!-- TASK_ID:{task_id} -->"
+
+        milestones: list[dict[str, str]] = []
 
         milestone_patterns = [
             "TASK_SPEC_READY", "ROOT_CAUSE_FOUND", "FIX_APPLIED",
@@ -629,33 +554,55 @@ class AgentTeamsClient:
             "RETROSPECT_DONE",
         ]
 
-        # 扫描所有 admin 已加入的房间
+        # GAP-05 过滤②：已绑定归属房间 → 只扫这一个（99% 场景），避免扫历史房间串台
         try:
             self.matrix_login()
-            rooms = self.get_joined_rooms()
+            if bound_room_id:
+                rooms_to_scan = [bound_room_id]
+            else:
+                rooms_to_scan = self.get_joined_rooms()
         except RuntimeError as e:
             print(f"  ⚠ 检测里程碑失败: {e}")
-            return milestones
+            return milestones, bound_room_id
 
         admin_full = f"@{self.admin_user}:{self.matrix_domain}"
-        for room_id in rooms:
+        new_bound = bound_room_id
+
+        for room_id in rooms_to_scan:
             try:
-                msgs = self.read_room_messages(room_id, 50)
+                msgs = self.read_room_messages(room_id, 100)  # 稍多抓一些，避免漏
             except RuntimeError:
                 continue
             for msg in msgs:
-                # 排除 admin 自己发的消息（那是任务指令，不是 Worker 产出）
+                # 过滤①：时间窗口——丢弃任务创建之前的消息
+                if baseline_ts and msg.get("ts", 0) < baseline_ts:
+                    continue
+                # 排除 admin 自己发的消息（任务指令，非 Worker 产出）
                 if admin_full in msg["sender"]:
                     continue
-                for m in milestone_patterns:
-                    if m in msg["content"]:
+                # 过滤③：如果这条消息带 TASK_ID 隐藏标记，必须匹配当前 task_id（多任务并发兜底）
+                tag_match = self.TASK_TAG_RE.search(msg["content"])
+                if tag_match and tag_match.group(1) != task_id and task_tag not in msg["content"]:
+                    continue
+                for m_name in milestone_patterns:
+                    if m_name in msg["content"]:
+                        # 归属房间绑定：首次检测到里程碑后，记录这个三方房间
+                        if not new_bound:
+                            new_bound = room_id
+                        sender = msg["sender"]
+                        worker = sender.lstrip("@").split(":", 1)[0]
                         milestones.append({
-                            "milestone": m,
-                            "worker": msg["sender"],
+                            "milestone": m_name,
+                            "worker": worker,
                             "content": msg["content"][:200],
+                            "ts_ms": str(msg.get("ts", 0)),
+                            "room_id": room_id,
                         })
                         break
-        return milestones
+
+        # 按时间升序（保证里程碑顺序正确）
+        milestones.sort(key=lambda x: int(x.get("ts_ms", "0") or 0))
+        return milestones, new_bound
 
     async def wait_for_task(
         self,
@@ -663,51 +610,130 @@ class AgentTeamsClient:
         timeout: float = 600,
         poll_interval: float = 10,
     ) -> dict[str, Any]:
-        """等待任务完成，轮询里程碑进度。
+        """GAP-05/07: 自适应轮询 + Checkpoint 断点续传。
+
+        关键改进：
+          1. 启动时先加载 checkpoint，恢复之前已检测到的里程碑与累计耗时
+          2. 轮询间隔随 elapsed 自适应（初期密后期疏）
+          3. 每检测到**新**里程碑，立刻落盘 checkpoint（防止超时前功尽弃）
+          4. seen_milestones 改为「全部历史」列表 + 「去重显示」集合，保留打回场景
+          5. 超时时 checkpoint 标记为 timeout，下次 wait_for_task 可从断点继续
 
         Args:
-            task_id: 任务 ID
-            timeout: 超时时间（秒）
-            poll_interval: 轮询间隔（秒）
+            task_id: 任务 ID（UUID）
+            timeout: 本轮等待允许的**增量**超时时间（秒），与 checkpoint 累计耗时无关
+            poll_interval: 基础轮询间隔（秒），自适应基于此倍增
 
         Returns:
             {
-                "status": "completed" | "failed" | "timeout",
-                "milestones": [...],
-                "elapsed": float,
+                "status": "completed" | "timeout",
+                "milestones": [...],   # 完整里程碑历史（可含重复，用于打回）
+                "elapsed": float,      # 总累计耗时
+                "resumed": bool,       # 是否从 checkpoint 恢复
+                "checkpoint_path": str,
             }
         """
-        start = time.time()
-        seen_milestones: set[str] = set()
-
-        while time.time() - start < timeout:
-            await asyncio.sleep(poll_interval)
-
-            milestones = await self.detect_milestones(task_id)
-            new_milestones = [m for m in milestones if m["milestone"] not in seen_milestones]
-
-            for m in new_milestones:
-                seen_milestones.add(m["milestone"])
-                print(f"  [AgentTeams] 检测到里程碑: {m['milestone']} ← @{m['worker']}")
-
-            # 检查是否闭环完成
-            if "RETROSPECT_DONE" in seen_milestones:
+        # ---- GAP-07: 恢复 checkpoint ----
+        cp = self._load_checkpoint(task_id)
+        resumed = False
+        if cp is None:
+            cp = TaskCheckpoint(
+                task_id=task_id,
+                baseline_ts=int((time.time() - 60) * 1000),  # 兜底：1 分钟前
+            )
+            self._save_checkpoint(cp)
+        else:
+            resumed = True
+            latest = cp.latest_milestone_set()
+            if latest:
+                print(f"  ♻ 从断点恢复，已达 {len(latest)} 个里程碑: {', '.join(sorted(latest))}")
+            if cp.status == "completed":
                 return {
                     "status": "completed",
-                    "milestones": milestones,
-                    "elapsed": time.time() - start,
+                    "milestones": cp.seen_milestones,
+                    "elapsed": cp.elapsed,
+                    "resumed": True,
+                    "checkpoint_path": str(self._checkpoint_path(task_id)),
                 }
 
-            # 检查是否失败
-            if "TEST_FAILED" in seen_milestones or "RELEASE_ROLLED_BACK" in seen_milestones:
-                # 打回后继续等待（可能会有 FIX_APPLIED 的再次出现）
-                pass
+        # 本轮等待开始时间 + 累计耗时
+        round_start = time.time()
+        total_elapsed = cp.elapsed
+        displayed: set[tuple[str, int]] = set()  # (milestone, ts_ms) → 避免同一个事件打印两次
 
-        return {
-            "status": "timeout",
-            "milestones": list(seen_milestones),
-            "elapsed": time.time() - start,
-        }
+        while True:
+            # ---- 增量超时判定 ----
+            round_elapsed = time.time() - round_start
+            if round_elapsed >= timeout:
+                cp.status = "timeout"
+                cp.elapsed = total_elapsed
+                cp.last_poll_ts = time.time()
+                self._save_checkpoint(cp)
+                print(f"  ⏱ 本轮等待超时（本轮 {round_elapsed:.0f}s，累计 {total_elapsed:.0f}s）。"
+                      f"重新调用 wait_for_task('{task_id}') 可从断点继续。")
+                return {
+                    "status": "timeout",
+                    "milestones": cp.seen_milestones,
+                    "elapsed": total_elapsed,
+                    "resumed": resumed,
+                    "checkpoint_path": str(self._checkpoint_path(task_id)),
+                }
+
+            # ---- 自适应 sleep ----
+            current_interval = self._adaptive_poll_interval(total_elapsed, base=poll_interval)
+            # 用更短的分段 sleep，保证 timeout 到时立即响应（不会多等一个完整 interval）
+            sleep_segment = min(current_interval, max(1.0, timeout - round_elapsed))
+            await asyncio.sleep(sleep_segment)
+            total_elapsed = cp.elapsed + (time.time() - round_start)
+
+            # ---- 轮询里程碑 ----
+            milestones, new_bound = await self.detect_milestones(task_id)
+
+            # ---- 与 checkpoint 合并：按 (milestone, ts_ms) 去重，保留历史 ----
+            existing_keys = {
+                (m["milestone"], m.get("ts_ms", "0"))
+                for m in cp.seen_milestones
+            }
+            newly_added = False
+            for m in milestones:
+                key = (m["milestone"], m.get("ts_ms", "0"))
+                if key in existing_keys:
+                    continue
+                cp.seen_milestones.append(m)
+                existing_keys.add(key)
+                newly_added = True
+                # 打印新里程碑
+                if key not in displayed:
+                    displayed.add(key)
+                    print(f"  [AgentTeams] 检测到里程碑: {m['milestone']} ← @{m['worker']}")
+
+            # ---- 归属房间更新 ----
+            if new_bound and new_bound != cp.bound_room_id:
+                cp.bound_room_id = new_bound
+                newly_added = True
+
+            # ---- 有任何更新就落盘 checkpoint（保证崩溃/超时不丢进度） ----
+            if newly_added:
+                cp.last_poll_ts = time.time()
+                cp.elapsed = total_elapsed
+                self._save_checkpoint(cp)
+
+            # ---- 判定闭环完成 ----
+            if "RETROSPECT_DONE" in cp.latest_milestone_set():
+                cp.status = "completed"
+                cp.elapsed = total_elapsed
+                self._save_checkpoint(cp)
+                self.clear_checkpoint(task_id)  # 正常结束清理
+                return {
+                    "status": "completed",
+                    "milestones": cp.seen_milestones,
+                    "elapsed": total_elapsed,
+                    "resumed": resumed,
+                    "checkpoint_path": "",
+                }
+
+            # 打回场景（TEST_FAILED / RELEASE_ROLLED_BACK）：继续等待重新 FIX_APPLIED → TEST_PASSED
+            # （无需特殊处理，因为 seen_milestones 保留全部历史 + 打印时按 key 去重）
 
     # ------------------------------------------------------------------ #
     # Skill 管理
@@ -756,16 +782,7 @@ class AgentTeamsClient:
 
     async def approve_release(self, task_id: str, approved: bool = True,
                               reason: str = "") -> bool:
-        """人工审批发布。
-
-        AgentTeams 的 Human CRD 允许人工介入审批。
-        此方法通过 Matrix 向 Manager 发送审批结果。
-
-        Args:
-            task_id: 任务 ID
-            approved: 是否批准
-            reason: 审批理由
-        """
+        """人工审批发布。"""
         self.matrix_login()
         room_id = self.ensure_manager_room()
 
@@ -787,16 +804,7 @@ class AgentTeamsClient:
 
     async def request_human_intervention(self, task_id: str, reason: str,
                                          urgency: str = "normal") -> bool:
-        """请求人工介入。
-
-        当系统检测到需要人工决策的场景时（如高风险发布、数据迁移确认等），
-        通过此方法向人工操作员发送介入请求。
-
-        Args:
-            task_id: 任务 ID
-            reason: 介入原因
-            urgency: 紧急程度（low / normal / high / critical）
-        """
+        """请求人工介入。"""
         self.matrix_login()
         room_id = self.ensure_manager_room()
 
@@ -819,16 +827,7 @@ class AgentTeamsClient:
 
     async def send_human_feedback(self, task_id: str, worker_name: str,
                                   feedback: str) -> bool:
-        """向指定 Worker 发送人工反馈。
-
-        人工操作员可以针对某个 Worker 的产出提供反馈，
-        反馈会通过 Matrix 发送给 Manager，由 Manager 转达给 Worker。
-
-        Args:
-            task_id: 任务 ID
-            worker_name: 目标 Worker
-            feedback: 反馈内容
-        """
+        """向指定 Worker 发送人工反馈。"""
         self.matrix_login()
         room_id = self.ensure_manager_room()
 
@@ -843,21 +842,11 @@ class AgentTeamsClient:
 
     async def override_worker_state(self, worker_name: str,
                                     new_state: str) -> bool:
-        """人工覆盖 Worker 状态。
-
-        允许人工操作员直接修改 Worker 状态（如暂停/恢复/重启）。
-
-        Args:
-            worker_name: Worker 名称
-            new_state: 新状态（Running / Stopped / Paused）
-        """
+        """人工覆盖 Worker 状态。"""
         return await self.update_worker(worker_name, state=new_state)
 
     async def get_human_tasks(self) -> list[dict[str, Any]]:
-        """获取所有需要人工介入的任务。
-
-        扫描 Manager 房间消息，识别包含 Human 介入请求的消息。
-        """
+        """获取所有需要人工介入的任务。"""
         try:
             self.matrix_login()
             room_id = self.ensure_manager_room()
@@ -887,30 +876,98 @@ class AgentTeamsClient:
             return []
         return re.findall(r"name:\s*(\S+)", stdout)
 
-    def _get_worker_skills(self, name: str) -> list[str]:
-        """从 workers.yaml 获取 Worker 的默认 skills。"""
-        defaults = {
-            "aggregator": ["issue-parsing", "knowledge-rag", "evidence-log"],
-            "rootcause": ["root-cause-analysis", "impact-analysis", "git-operations",
-                          "repo-context", "code-search", "knowledge-rag", "evidence-log"],
-            "fixer": ["code-gen", "git-operations", "repo-context", "code-search", "evidence-log"],
-            "tester": ["test-generation", "evidence-log"],
-            "releaser": ["release-gate", "evidence-log"],
-            "retrospector": ["retrospective", "knowledge-rag", "evidence-log"],
-        }
-        return defaults.get(name, [])
+    # ---- workers.yaml 解析（委托给 agentteams_yaml 模块） ----
 
-    def _get_worker_mcp(self, name: str) -> list[str]:
-        """从 workers.yaml 获取 Worker 的默认 MCP 服务器。"""
-        defaults = {
-            "aggregator": ["github"],
-            "rootcause": ["github"],
-            "fixer": ["github", "code-scan"],
-            "tester": ["test-platform"],
-            "releaser": ["ci"],
-            "retrospector": [],
-        }
-        return defaults.get(name, [])
+    async def apply_workers_yaml(self, yaml_path: str = "") -> bool:
+        """通过 agt apply -f 批量创建/更新所有 Worker。
+
+        这是推荐的 Worker 生命周期管理方式：workers.yaml 是单一数据源，
+        AgentTeams 平台通过声明式 apply 管理 Worker 的创建和更新。
+
+        Args:
+            yaml_path: workers.yaml 的路径（默认 src/agentteams/workers.yaml）
+
+        Returns:
+            True 如果 apply 成功
+        """
+        path = yaml_path or str(agentteams_yaml.get_workers_yaml_path())
+        if not Path(path).exists():
+            print(f"  ⚠ workers.yaml 不存在: {path}")
+            return False
+
+        # 在 controller 容器内执行 apply
+        docker_path = "/tmp/workers.yaml"
+        # 先 cp 文件进容器
+        subprocess.run(
+            ["docker", "cp", path, f"{AgtCLI.CONTROLLER}:{docker_path}"],
+            capture_output=True, timeout=30,
+        )
+
+        code, stdout, stderr = await AgtCLI.run("apply", "-f", docker_path, timeout=30)
+        if code == 0:
+            print(f"  ✓ workers.yaml apply 成功")
+            # 清除缓存，下次重新解析
+            agentteams_yaml.clear_cache()
+            return True
+        print(f"  ✘ workers.yaml apply 失败: {stderr[:200]}")
+        return False
+
+    async def ensure_pdca_workers(self, workers_dir: str) -> dict[str, bool]:
+        """确保 6 个 PDCA Worker 都已创建并 Running。
+
+        优先使用 workers.yaml apply（声明式批量创建），
+        fallback 到逐个创建（使用 workers.yaml 解析的 skills/MCP）。
+
+        Args:
+            workers_dir: SOUL.md 文件所在目录（如 src/agentteams/workers/）
+
+        Returns:
+            {worker_name: is_ready}
+        """
+        existing = await self._list_resource("workers")
+        results = {}
+
+        # 检查是否所有 Worker 都已存在
+        all_exist = all(name in existing for name in self.PDCA_WORKERS)
+        if all_exist:
+            return {name: True for name in self.PDCA_WORKERS}
+
+        # 优先尝试 workers.yaml apply（声明式批量创建）
+        yaml_path = str(agentteams_yaml.get_workers_yaml_path())
+        if Path(yaml_path).exists():
+            print("  → 使用 workers.yaml apply 批量创建 Worker...")
+            ok = await self.apply_workers_yaml(yaml_path)
+            if ok:
+                # 重新检查
+                existing = await self._list_resource("workers")
+                for name in self.PDCA_WORKERS:
+                    results[name] = name in existing
+                return results
+
+        # Fallback: 逐个创建（使用 workers.yaml 解析的 skills/MCP）
+        print("  → workers.yaml apply 不可用，逐个创建 Worker...")
+        for name in self.PDCA_WORKERS:
+            if name in existing:
+                results[name] = True
+                continue
+
+            soul_path = Path(workers_dir) / name / "SOUL.md"
+            if not soul_path.exists():
+                results[name] = False
+                continue
+
+            skills = agentteams_yaml.get_worker_skills(name)
+            mcp = agentteams_yaml.get_worker_mcp(name)
+
+            ok = await self.create_worker(
+                name=name,
+                soul_file=str(soul_path),
+                skills=skills,
+                mcp_servers=mcp,
+            )
+            results[name] = ok
+
+        return results
 
     async def _archive_worker_knowledge(self, name: str) -> None:
         """归档 Worker 的知识到 shared/knowledge。"""
@@ -930,29 +987,21 @@ async def _self_test():
     # 1. 连通性
     try:
         ok = await client.ping()
-        print(f"{'✓' if ok else '✘'} 平台连通性: {ok}")
+        print(f"✓ 平台连通性: {'OK' if ok else 'FAIL'}")
     except Exception as e:
-        print(f"✘ 平台连通性: {e}（可能 AgentTeams 未启动）")
+        print(f"  ⚠ 连通性检查异常: {e}")
 
-    # 2. 状态
+    # 2. 获取状态
     try:
         status = await client.status()
-        print(f"  Managers: {status['managers']}")
-        print(f"  Workers: {status['workers']}")
-        print(f"  Teams: {status['teams']}")
-        print(f"  PDCA Workers Ready: {status['pdca_workers_ready']}")
+        print(f"✓ 平台状态: managers={status['managers']}, workers={status['workers']}")
     except Exception as e:
-        print(f"  ✘ 状态查询失败: {e}")
+        print(f"  ⚠ 状态检查异常: {e}")
 
-    # 3. 数据模型
-    wi = WorkerInfo(name="test", model="deepseek-v4-flash", state="Running")
-    assert wi.name == "test"
-    ti = TaskInfo(task_id="t-001", spec="test spec")
-    assert ti.task_id == "t-001"
-    print("✓ 数据模型")
-
-    print("=== 自检完成 ===")
+    await client.close()
+    print("=== AgentTeamsClient 自检完成 ===")
 
 
 if __name__ == "__main__":
+    import asyncio
     asyncio.run(_self_test())

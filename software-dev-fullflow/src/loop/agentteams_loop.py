@@ -1,119 +1,131 @@
-"""AgentTeams 原生调度循环 —— 完全基于阿里 AgentTeams 框架的 PDCA 闭环引擎。
+"""AgentTeams 客户端 —— 任务提交 + 进度监控 + 结果展示。
 
-与旧 TeamManagerLoop（manager.py）的关键区别：
+本模块是 AgentTeams 平台的 **Python 客户端**，不再实现调度逻辑。
+AgentTeams 平台（K8s 原生多 Agent 协作平台）已经提供了完整的：
+  - Manager 智能派单（LLM 驱动）
+  - Worker 生命周期管理（YAML CRD → 容器运行）
+  - Matrix 房间协作（@mention 接力，天然留痕）
+  - Skill 体系 + MCP 网关（Higress 接入真实工具链）
+  - MinIO 共享存储（持久化记忆，独立于上下文窗口）
 
-  旧方案（MAF 底座）:
-    - 用 MAF 的 Agent 类手动创建 Agent 实例
-    - 用代码循环（while）逐阶段派单
-    - 验证闸门用独立 LLM 调用
-    - 上下文管理在内存中（ContextBudget 对象）
-    - 6 个 Worker 是 Python dataclass 角色定义
+本模块的职责：
+  1. 接收用户任务输入
+  2. 提交任务给 AgentTeams Manager
+  3. 监控 Matrix 房间中的里程碑进展
+  4. 同步本地状态机（观测层，非控制层）
+  5. 展示结果 + 生成评价报告
 
-  新方案（AgentTeams 原生）:
-    - 用 AgentTeams 的 Worker CRD（YAML 声明式）
-    - 用 AgentTeams Manager 的 LLM 驱动调度
-    - 验证闸门用 AgentTeams 的 Worker skill（tester/releaser 自带质量门禁能力）
-    - 上下文管理用 AgentTeams 的 shared/knowledge（MinIO 持久化）
-    - 6 个 Worker 是 AgentTeams 平台上的独立运行实例
-
-AgentTeams 框架的核心优势：
-  1. 声明式 Worker 管理 —— YAML 定义，平台自动调度
-  2. Matrix 房间协作 —— @mention 接力，天然留痕
-  3. Manager 智能派单 —— LLM 理解任务，自动匹配 Worker
-  4. Skill 体系 —— 可插拔工具能力，按需挂载
-  5. MCP 网关 —— 通过 Higress 接入真实工具链（GitHub/测试平台/CI）
-  6. 持久化记忆 —— MinIO 共享知识库，独立于上下文窗口
-
-运行模式：
-  - delegated: 将任务完全委托给 AgentTeams Manager，只监控进度（推荐）
-  - orchestrated: Python 代码控制流水线，直接给 Worker 发消息（精细控制）
+架构原则：
+  - Python 代码是"客户端"，不是"调度引擎"
+  - 调度逻辑由 AgentTeams 平台原生提供
+  - 本地状态机仅用于观测和展示，不干预 AgentTeams 的调度决策
 
 用法：
     loop = AgentTeamsLoop(task_id="task-001", spec="修复登录页面空指针异常")
-    result = await loop.run(mode="delegated")  # 或 "orchestrated"
+    result = await loop.run()
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import os
+import sys
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+# 允许直接运行本文件做自检（python src/loop/agentteams_loop.py）：把 src/ 加入 sys.path，
+# 使 `from loop.xxx import` 绝对导入（项目统一约定）在独立运行时也能解析。
+if __package__ is None or __package__ == "":
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from loop.state import State, Milestone, TaskState, STATE_EXECUTOR, STATE_EXPECTED_MILESTONE
-from loop.team import get_role, DEFAULT_AGENTS, AGENT_MAP
-from loop.context import (
-    ContextManager, TokenEstimator, DynamicBudgetAllocator, SemanticMemorySearch,
-)
-from loop.evaluation import score_team, adoption_score
-from loop.agentteams_client import AgentTeamsClient, AgtCLI, TaskInfo
-from loop.agent_bus import AgentBus, EventBus, EventType, MessageType
-from loop.agent_interface import (
-    WorkerContext, WorkerResult, ResultStatus,
-    AGENT_REGISTRY, get_agent, list_agents,
-)
+from loop.context import ContextManager, SemanticMemorySearch, AgentMemory, AgentMemoryEntry
+from loop.evaluation import score_team
+from loop.agentteams_client import AgentTeamsClient
+from loop.agent_bus import AgentBus, EventBus
+from loop.audit_logger import AuditLogger
 
 
 # ========================================================================== #
-# 1. AgentTeams 原生调度循环
+# AgentTeams 客户端
 # ========================================================================== #
 
 class AgentTeamsLoop:
-    """基于 AgentTeams 框架的 PDCA 闭环调度循环。
+    """AgentTeams 平台的 Python 客户端。
 
-    完全替代旧的 TeamManagerLoop（manager.py），使用 AgentTeams 的原生机制：
-      - Worker 由 AgentTeams 平台管理（YAML CRD → 容器运行）
-      - 任务派发走 AgentTeams Manager（LLM 驱动）
-      - 协作通过 Matrix 房间 @mention
-      - 验证由 Worker 的 skill 能力完成（tester 有 test-generation skill）
-      - 上下文/记忆用 AgentTeams 的 shared/knowledge + MinIO
-      - 评价/治理用 AgentTeams 的 agt 命令
-
-    核心设计决策：
-      - PDCA 状态机（state.py）保留为确定性协议，但执行委托给 AgentTeams 平台
-      - 评价器（evaluation.py）保留为 Python 逻辑，但治理命令通过 agt CLI 执行
-      - 上下文工程（context.py）保留为本地辅助，但持久化记忆走 AgentTeams 的 MinIO
+    职责边界：
+      - ✅ 提交任务给 AgentTeams Manager
+      - ✅ 监控 Matrix 房间中的里程碑进展
+      - ✅ 同步本地状态机（观测层）
+      - ✅ 生成评价报告
+      - ❌ 不实现 Worker 调度（由 AgentTeams Manager 负责）
+      - ❌ 不实现验证闸门（由 AgentTeams Worker skill 负责）
+      - ❌ 不实现上下文管理（由 AgentTeams MinIO 负责）
     """
 
-    # 硬上限
-    MAX_STAGES = 8
-    MAX_RETRIES_PER_STAGE = 3
-    TASK_TIMEOUT = 600  # 10 分钟
+    TASK_TIMEOUT = 3600  # 1 小时
 
     def __init__(
         self,
         task_id: str,
         spec: str,
         workdir: Path | None = None,
-        mode: str = "delegated",
         mock: bool = False,
     ):
         """
         Args:
             task_id: 任务唯一标识
             spec: 任务规格（自然语言描述）
-            workdir: 工作目录（用于产物落盘和记忆持久化）
-            mode: "delegated"（委托给 AgentTeams Manager）或 "orchestrated"（Python 控制流水线）
+            workdir: 工作目录（用于产物落盘）
             mock: True 时跳过 AgentTeams 调用，用确定性结果演示流程
         """
         self.task_id = task_id
         self.spec = spec
         self.workdir = workdir or Path.cwd()
-        self.mode = mode
         self.mock = mock
 
-        # 状态机（复用 state.py）
+        # 本地状态机（观测层，同步自 AgentTeams 平台的 Matrix 消息）
         self.state = TaskState(task_id=task_id, spec=spec)
 
-        # AgentTeams 客户端
+        # AgentTeams 平台客户端
         self.client = AgentTeamsClient()
 
-        # 上下文工程（复用 context.py）
+        # ---- GAP-13: 观测组件（Context/记忆/语义搜索）延迟初始化 ----
+        #   委托模式（delegated）下：AgentTeams 平台用 MinIO 管理共享状态 + Matrix 留痕，
+        #   本地 ContextManager/SemanticMemorySearch/AgentMemories 没有真实数据流，
+        #   初始化只会白白创建目录/分配对象。因此：
+        #     - mock=True  → 立即初始化（_run_mock 路径真实消费这些组件）
+        #     - mock=False → 先置 None，未来接入真实 Matrix→本地数据流时再懒加载
+        self.ctx: ContextManager | None = None
+        self.semantic_search: SemanticMemorySearch | None = None
+        self.agent_memories: dict[str, AgentMemory] = {}
+        if mock:
+            self._ensure_local_contexts()
+
+        # 评价信号采集（委托模式也需要，从 Matrix 消息里提取）
+        self.reject_by_agent: dict[str, int] = {}
+        self.durations_by_agent: dict[str, float] = {}
+        self.protocol_by_agent: dict[str, bool] = {}
+        self.adoption_by_agent: dict[str, float] = {}
+
+        # 事件总线（观测层）
+        self.agent_bus = AgentBus()
+        self.event_bus = EventBus()
+
+        # 工作目录
+        self.tasks_dir = self.workdir / "shared" / "tasks" / task_id
+        self.knowledge_dir = self.workdir / "shared" / "knowledge"
+
+        # 结构化审计日志（可观测 / 可审计，委托模式也需要）
+        self.audit = AuditLogger(self.workdir / "shared" / "audit")
+
+    def _ensure_local_contexts(self) -> None:
+        """GAP-13: 懒加载本地上下文工程组件（只在 mock 模式下调用）。"""
+        if self.ctx is not None:
+            return
         self.ctx = ContextManager(
-            task_id=task_id,
+            task_id=self.task_id,
             workdir=self.workdir,
             total_budget=32000,
         )
@@ -121,56 +133,40 @@ class AgentTeamsLoop:
             "你是软件研发团队的 PDCA 闭环调度者，"
             "负责将任务拆解为 6 个阶段，驱动 aggregator/rootcause/fixer/tester/releaser/retrospector 接力完成。"
         )
-        self.ctx.set_task_spec(spec)
-
-        # 评价信号采集
-        self.reject_by_agent: dict[str, int] = {}
-        self.durations_by_agent: dict[str, float] = {}
-        self.protocol_by_agent: dict[str, bool] = {}
-        self.adoption_by_agent: dict[str, float] = {}
-
-        # AgentBus + EventBus（Layer 2）
-        self.agent_bus = AgentBus()
-        self.event_bus = EventBus()
-
-        # 语义记忆搜索（Layer 1.4）
+        self.ctx.set_task_spec(self.spec)
+        # 语义搜索依赖 ctx.long_mem，必须在 ctx 初始化之后
         self.semantic_search = SemanticMemorySearch(self.ctx.long_mem)
-
-        # 工作目录
-        self.tasks_dir = self.workdir / "shared" / "tasks" / task_id
-        self.knowledge_dir = self.workdir / "shared" / "knowledge"
+        # 按 Agent 维度的独立记忆
+        self._init_agent_memories()
 
     # ------------------------------------------------------------------ #
     # 公开入口
     # ------------------------------------------------------------------ #
 
-    async def run(self, max_stages: int | None = None) -> TaskState:
-        """运行 PDCA 闭环。返回最终 TaskState。
-
-        Args:
-            max_stages: 最大阶段数（默认 MAX_STAGES=8）
-        """
-        max_stages = max_stages or self.MAX_STAGES
-
+    async def run(self) -> TaskState:
+        """提交任务给 AgentTeams Manager，监控进度，返回最终状态。"""
         self.state.save(self.tasks_dir / "state.json")
-        print(f"\n=== AgentTeams Loop 启动 · 任务 {self.task_id} ===")
-        print(f"模式: {self.mode}")
+        print(f"\n=== AgentTeams 客户端启动 · 任务 {self.task_id} ===")
         print(f"初始状态: {self.state.state.value}")
-        print(f"上下文预算: {self.ctx.budget.total_budget} tokens")
 
-        if self.mock:
-            return await self._run_mock(max_stages)
-
-        if self.mode == "delegated":
-            return await self._run_delegated(max_stages)
-        else:
-            return await self._run_orchestrated(max_stages)
+        try:
+            if self.mock:
+                result = await self._run_mock()
+            else:
+                result = await self._run_delegated()
+            # 无论 mock / delegated，结束都把最终状态机落盘（观测层证据持久化，
+            # 此前 state.json 只保存了初始状态，导致闭环结束后 state.json 仍停在 SPEC_INPUT）
+            self.state.save(self.tasks_dir / "state.json")
+            return result
+        finally:
+            # 关闭审计日志文件句柄（避免 Windows 下临时目录清理失败）
+            self.audit.close()
 
     # ------------------------------------------------------------------ #
-    # 模式 1: delegated —— 委托给 AgentTeams Manager
+    # 委托模式：任务完全交给 AgentTeams Manager
     # ------------------------------------------------------------------ #
-    async def _run_delegated(self, max_stages: int) -> TaskState:
-        """将任务完全委托给 AgentTeams Manager。
+    async def _run_delegated(self) -> TaskState:
+        """将任务提交给 AgentTeams Manager，轮询等待完成。
 
         AgentTeams 的 Manager 是 LLM 驱动的，会自动：
           1. 理解任务内容
@@ -178,13 +174,32 @@ class AgentTeamsLoop:
           3. 在 Matrix 房间中 @mention 派单
           4. 追踪里程碑进展
 
-        本方法只负责：
-          1. 创建任务并发送给 Manager
+        本方法（Python 客户端）只负责：
+          1. 提交任务给 Manager
           2. 轮询 Matrix 房间消息，检测里程碑
-          3. 推进本地状态机（与 AgentTeams 的实际进度同步）
+          3. 同步本地状态机（观测层）
           4. 超时/失败处理
+          5. 生成评价报告
+
+        GAP-04 降级策略：
+          委托模式遇到平台不可用时，自动 fallback 到 mock 模式，
+          保证演示（"闭环真能跑"卖点）在任何环境下都不翻车。
         """
-        print("  → 委托模式：将任务派发给 AgentTeams Manager...")
+        print("  → 提交任务给 AgentTeams Manager...")
+
+        # GAP-04: 委托模式降级策略 —— 先探活，平台不可用直接降级到 mock
+        try:
+            platform_ok = await self.client.ping()
+        except Exception as e:  # noqa: BLE001 - 探活失败（docker 子进程/超时等）不应中断演示
+            print(f"  ⚠ 平台探活异常: {e}")
+            platform_ok = False
+
+        if not platform_ok:
+            print("\n  ⚠ AgentTeams 平台不可用，自动切换 Mock 模式演示完整闭环。")
+            print("    （委托模式 → mock 降级：确保演示不翻车）")
+            self.audit.log(self.task_id, "manager", "state", "degrade_to_mock",
+                           result="OK", detail={"reason": "platform_unavailable"})
+            return await self._run_mock()
 
         # 检查平台状态
         status = await self.client.status()
@@ -194,443 +209,55 @@ class AgentTeamsLoop:
             workers_dir = str(Path(__file__).resolve().parent.parent / "agentteams" / "workers")
             await self.client.ensure_pdca_workers(workers_dir)
 
-        # 创建任务（Matrix 用户是 @manager，不是 default）
+        # 创建任务并发送给 Manager
         try:
             task_info = await self.client.create_task(
                 spec=self.spec,
                 manager=os.environ.get("AGENTTEAMS_MANAGER_USER", "manager"),
             )
             print(f"  → 任务已创建: {task_info.task_id}")
+            self.audit.log(self.task_id, "manager", "state", "create_task",
+                           result="OK", detail={"task_id": task_info.task_id})
         except RuntimeError as e:
-            print(f"  ✘ 任务创建失败: {e}")
-            return self.state
+            # GAP-04: 任务创建失败（Matrix 登录/房间不可达等）同样降级到 mock
+            print(f"  ✘ 任务提交失败: {e}")
+            print("  ⚠ AgentTeams 平台不可用，自动切换 Mock 模式演示完整闭环。")
+            self.audit.log_error(self.task_id, "manager", "create_task", str(e))
+            self.audit.log(self.task_id, "manager", "state", "degrade_to_mock",
+                           result="OK", detail={"reason": "create_task_failed"})
+            return await self._run_mock()
 
-        # 轮询等待完成
+        # 轮询等待 AgentTeams 平台完成
         result = await self.client.wait_for_task(
             task_id=task_info.task_id,
             timeout=self.TASK_TIMEOUT,
             poll_interval=10,
         )
+        self.audit.log(self.task_id, "manager", "state", "wait_task",
+                       result=result.get("status", "done"),
+                       detail={"elapsed_s": round(result.get("elapsed", 0), 1),
+                               "milestones": [m["milestone"] for m in result.get("milestones", [])]})
 
-        # 同步本地状态机
+        # 同步本地状态机（观测层）
         self._sync_state_from_milestones(result.get("milestones", []))
 
         # 生成评价报告
         self._print_evaluation()
 
-        print(f"\n=== AgentTeams Loop 结束（委托模式）===")
+        print(f"\n=== AgentTeams 客户端结束 ===")
         print(f"最终状态: {self.state.state.value}")
         print(f"耗时: {result['elapsed']:.1f}s")
         return self.state
 
     # ------------------------------------------------------------------ #
-    # 模式 2: orchestrated —— Python 控制流水线
-    # ------------------------------------------------------------------ #
-    async def _run_orchestrated(self, max_stages: int) -> TaskState:
-        """Python 代码直接控制 PDCA 流水线。
-
-        与旧 manager.py 的 TeamManagerLoop.run() 逻辑一致，但底层用 AgentTeams：
-          - 不创建 MAF Agent 实例
-          - 通过 agt send 给 Worker 发消息
-          - 通过 agt messages 读取 Worker 回复
-          - 验证闸门用 tester/releaser Worker 的 skill 能力
-
-        优势：精细控制每个阶段，支持打回重试、上下文管理、评价埋点。
-        """
-        self.ctx.add_context(f"【原始任务】\n{self.spec}\n", zone="critical")
-
-        stages_done = 0
-        while stages_done < max_stages:
-            stage = self.state.state
-            if stage == State.RETROSPECT and self.state.milestones.get(Milestone.RETROSPECT_DONE.value):
-                break  # 闭环完成
-
-            executor = STATE_EXECUTOR[stage]
-            expected_ms = STATE_EXPECTED_MILESTONE[stage].value
-            print(f"\n[{stages_done + 1}] 阶段 {stage.value} → 执行者 {executor}（期望里程碑 {expected_ms}）")
-
-            # 上下文工程
-            if not self.ctx.start_iteration():
-                print(f"  ⚠ 上下文预算不足，跳过阶段 {stage.value}")
-                break
-
-            # 同阶段重试
-            local_retry = 0
-            while True:
-                local_retry += 1
-                t0 = time.time()
-
-                # 组装 prompt
-                worker_prompt = self.ctx.assemble_prompt(
-                    current_task=f"阶段 {stage.value}，执行者 {executor}，里程碑 {expected_ms}"
-                )
-                print(f"  → 派单给 {executor}（{TokenEstimator.estimate(worker_prompt)} tokens）...")
-
-                # 发射 Worker 启动事件
-                await self.event_bus.worker_started(executor, self.task_id)
-
-                # 通过 AgentTeams 给 Worker 发消息（而非 MAF Agent.run）
-                worker_out = await self._dispatch_to_worker(
-                    worker_name=executor,
-                    prompt=worker_prompt,
-                    milestone=expected_ms,
-                )
-                elapsed = time.time() - t0
-                self.durations_by_agent[executor] = self.durations_by_agent.get(executor, 0.0) + elapsed
-                print(f"  ← {executor} 产出（{elapsed:.1f}s）：{worker_out[:120]}")
-
-                # 验证闸门
-                if self._is_judge_stage(stage):
-                    # 对于 tester/releaser 阶段，Worker 本身就是裁判
-                    verdict = "PASS" if expected_ms in worker_out else "FAIL"
-                    detail = worker_out
-                else:
-                    verdict, detail = await self._verify_via_agentteams(stage, worker_out)
-
-                print(f"  校验: {verdict}")
-
-                if verdict == "PASS":
-                    # 发射 Worker 完成 + 里程碑达成事件
-                    await self.event_bus.worker_completed(
-                        executor, self.task_id, expected_ms, elapsed=elapsed,
-                    )
-                    await self.event_bus.milestone_reached(
-                        executor, self.task_id, expected_ms,
-                    )
-                    self._on_stage_pass(stage, executor, expected_ms, worker_out, elapsed)
-                    break
-
-                # FAIL 处理
-                self.reject_by_agent[executor] = self.reject_by_agent.get(executor, 0) + 1
-                await self.event_bus.milestone_failed(
-                    executor, self.task_id, expected_ms,
-                    data={"retries": local_retry, "detail": detail[:200]},
-                )
-                if local_retry >= self.MAX_RETRIES_PER_STAGE:
-                    print(f"  ✘ 阶段 {stage.value} 打回 {local_retry} 次仍失败，跳过")
-                    await self.event_bus.worker_failed(
-                        executor, self.task_id,
-                        data={"reason": f"打回上限 ({local_retry}次)", "detail": detail[:200]},
-                    )
-                    self.state.advance(
-                        STATE_EXPECTED_MILESTONE[stage],
-                        verdict="FAIL", detail=f"打回上限: {detail[:200]}", by=executor,
-                    )
-                    self.ctx.record_iteration_result(
-                        outcome=f"{stage.value} 失败（打回上限）",
-                        decisions=[],
-                        improvements=[{"opportunity": f"改善 {executor} 的 {stage.value} 执行质量", "priority": "high"}],
-                    )
-                    break
-
-                # 打回重试
-                feedback = f"[{stage.value} 校验未过 @{executor}] {detail[:500]}"
-                self.ctx.add_context(feedback, zone="support")
-                print(f"  → 打回 {executor} 重试（第 {local_retry} 次）：{detail[:100]}")
-
-            self.ctx.finish_iteration()
-            self.state.save(self.tasks_dir / "state.json")
-            stages_done += 1
-
-            if self.state.milestones.get(Milestone.RETROSPECT_DONE.value):
-                print("\n=== 闭环完成：RETROSPECT_DONE ===")
-                break
-
-        # 总结
-        self._print_summary()
-        self._print_evaluation()
-        return self.state
-
-    # ------------------------------------------------------------------ #
-    # 核心：通过 AgentTeams 给 Worker 派单
-    # ------------------------------------------------------------------ #
-    async def _dispatch_to_worker(
-        self, worker_name: str, prompt: str, milestone: str
-    ) -> str:
-        """通过 AgentTeams（Matrix）给指定 Worker 发消息并等待回复。
-
-        官方没有 `agt send`，与 Worker 交互走 Matrix（DM 房间 m.room.message）。
-        替代旧方案中 MAF 的 Agent(client=..., instructions=...).run(prompt)。
-
-        AgentTeams 的优势：
-          - Worker 已经在平台中运行（容器），有完整的 skill 和 MCP 工具链
-          - Worker 的 soul/agents 已在 YAML 中定义，无需每次传入
-          - 消息通过 Matrix 房间传递，天然留痕可审计
-        """
-        if self.mock:
-            return self._mock_worker_output(worker_name, milestone)
-
-        role = get_role(worker_name)
-        handoff = role.handoff_to or "manager"
-
-        # 构造 AgentTeams 消息（包含角色准则和里程碑期望）
-        message = (
-            f"[任务 {self.task_id}] {role.title}（{role.real_role}）请履行职责。\n\n"
-            f"【任务上下文】\n{prompt}\n\n"
-            f"【期望产出】里程碑 {milestone}\n"
-            f"完成后请 @mention {handoff} 并输出 {milestone}。"
-        )
-
-        try:
-            self.client.matrix_login()
-            room_id = self.client.ensure_worker_room(worker_name)
-            # 记录派单前的基线（避免把旧消息当本轮回复）
-            baseline = self._latest_worker_event(worker_name)
-            self.client.send_matrix_message(room_id, message)
-        except RuntimeError as e:
-            print(f"  ⚠ Matrix 派单失败 ({worker_name}): {e}")
-            return f"ERROR: Worker {worker_name} 无响应"
-
-        # 轮询等待 Worker 回复（最多 120s）
-        elapsed = 0
-        while elapsed < 120:
-            await asyncio.sleep(5)
-            elapsed += 5
-            reply = self.client.read_worker_reply(worker_name, baseline)
-            if reply:
-                return reply
-        print(f"  ⚠ Worker {worker_name} 120s 内未回复")
-        return f"ERROR: Worker {worker_name} 超时无回复"
-
-    def _latest_worker_event(self, worker_name: str) -> str:
-        """获取指定 Worker 房间内该 Worker 的最新一条 event_id（作为本轮基线）。"""
-        try:
-            room_id = self.client.ensure_worker_room(worker_name)
-            worker_full = f"@{worker_name}:{self.client.matrix_domain}"
-            msgs = self.client.read_room_messages(room_id, 20)
-            for m in reversed(msgs):
-                if worker_full in m["sender"]:
-                    return m["event_id"]
-        except RuntimeError:
-            pass
-        return ""
-
-    # ------------------------------------------------------------------ #
-    # 异步并行派单（Layer 1.2）
-    # ------------------------------------------------------------------ #
-    async def _dispatch_parallel(
-        self, tasks: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
-        """用 asyncio.gather 并行派发无依赖 Worker。
-
-        Args:
-            tasks: [
-                {"worker": "rootcause", "prompt": "...", "milestone": "ROOT_CAUSE_FOUND"},
-                {"worker": "fixer", "prompt": "...", "milestone": "FIX_APPLIED"},
-            ]
-
-        Returns:
-            [{"worker": "rootcause", "output": "...", "elapsed": 1.5}, ...]
-
-        适用场景：
-          - RootCause + Fixer 并行（如果 fixer 有足够上下文）
-          - 多 Fixer 并行修复不同模块
-          - 测试和发布准备并行
-        """
-        if not tasks:
-            return []
-
-        print(f"  → 并行派单: {len(tasks)} 个 Worker ({', '.join(t['worker'] for t in tasks)})")
-
-        async def dispatch_one(task: dict[str, Any]) -> dict[str, Any]:
-            t0 = time.time()
-            worker_name = task["worker"]
-            prompt = task["prompt"]
-            milestone = task.get("milestone", "")
-
-            # 触发事件
-            await self.event_bus.worker_started(worker_name, self.task_id)
-
-            try:
-                output = await self._dispatch_to_worker(worker_name, prompt, milestone)
-                elapsed = time.time() - t0
-                await self.event_bus.worker_completed(
-                    worker_name, self.task_id, milestone, elapsed=elapsed
-                )
-                return {"worker": worker_name, "output": output, "elapsed": elapsed, "error": None}
-            except Exception as e:
-                elapsed = time.time() - t0
-                await self.event_bus.error_occurred(
-                    worker_name, self.task_id, str(e)
-                )
-                return {"worker": worker_name, "output": "", "elapsed": elapsed, "error": str(e)}
-
-        results = await asyncio.gather(*[dispatch_one(t) for t in tasks])
-        return list(results)
-
-    # ------------------------------------------------------------------ #
-    # IterativeWorker 集成（Layer 1.1）
-    # ------------------------------------------------------------------ #
-    async def _run_iterative_worker(
-        self, worker_name: str, milestone: str, context: str
-    ) -> str:
-        """通过 IterativeWorker 基类运行支持 Ralph 迭代的 Worker。
-
-        适用 Worker：rootcause, fixer, tester, releaser
-        不适用：aggregator, retrospector（不需要迭代）
-        """
-        from loop.iterative_worker import (
-            RootCauseWorker, TesterWorker, ReleaserWorker,
-        )
-
-        iterative_workers = {
-            "rootcause": RootCauseWorker,
-            "tester": TesterWorker,
-            "releaser": ReleaserWorker,
-        }
-
-        worker_cls = iterative_workers.get(worker_name)
-        if worker_cls is None:
-            # 不支持迭代的 Worker，走普通派单
-            return await self._dispatch_to_worker(worker_name, context, milestone)
-
-        if self.mock:
-            worker = worker_cls(workdir=self.tasks_dir, mock=True)
-        else:
-            worker = worker_cls(workdir=self.tasks_dir, mock=False)
-
-        return await worker.run(context=context, milestone=milestone)
-
-    # ------------------------------------------------------------------ #
-    # 验证闸门（AgentTeams 方式 + 确定性脚本）
-    # ------------------------------------------------------------------ #
-    @staticmethod
-    def _gate_script_path(skill: str, script: str) -> Path | None:
-        """定位确定性验证脚本（skills/<skill>/scripts/<script>.py）。"""
-        # 从本文件向上找到软件研发项目根（src/loop → src → software-dev-fullflow）
-        root = Path(__file__).resolve().parent.parent.parent
-        p = root / "skills" / skill / "scripts" / script
-        return p if p.exists() else None
-
-    def _run_deterministic_gate(self, stage: State, worker_output: str) -> tuple[str, str] | None:
-        """对 tester/releaser 阶段先跑确定性验证脚本当裁判。
-
-        这是我们的「Ralph 反压」嵌进 AgentTeams 的落点：不再靠 LLM 自评 PASS/FAIL，
-        而是用真实的确定性脚本（跑测试 / 补丁完整性）当客观裁判。
-
-        返回 (verdict, detail)；若脚本不可用返回 None，交给 AgentTeams 裁判 Worker 兜底。
-        """
-        # FIX_APPLY 阶段 → 补丁完整性静态检查（check-patch-integrity.py）
-        if stage == State.FIX_APPLY:
-            script = self._gate_script_path("code-gen", "check-patch-integrity.py")
-            if script is None:
-                return None
-            # 若无 fix.json / patch，退化为产物关键词检查（确定性）
-            if "FIX_APPLIED" not in worker_output:
-                return "FAIL", "FIX_APPLIED 里程碑未在产出中出现"
-            return "PASS", f"补丁静态检查脚本可用（{script.name}）；里程碑 FIX_APPLIED 已确认"
-
-        # TEST_VERIFY 阶段 → 确定性测试闸门（verify_test_gate.py）
-        if stage == State.TEST_VERIFY:
-            script = self._gate_script_path("test-generation", "verify_test_gate.py")
-            if script is None:
-                return None
-            # 尝试从 worker 产出里找 test.json / test-report 作为 gate 输入。
-            # 当前编排模式下产出为文本，先用里程碑关键词做确定性兜底，
-            # 真实执行时由 tester 的 test-generation skill（脚本在容器内）产出 test.json。
-            has_failed = "TEST_FAILED" in worker_output or "FAIL" in worker_output.upper()
-            has_passed = "TEST_PASSED" in worker_output
-            if has_failed:
-                return "FAIL", "产出包含 TEST_FAILED/FAIL 信号，测试未通过"
-            if has_passed:
-                return "PASS", f"确定性测试闸门脚本可用（{script.name}）；里程碑 TEST_PASSED 已确认"
-            return None
-
-        # RELEASE 阶段 → 不设确定性脚本，交给 releaser Worker 判断
-        return None
-
-    async def _verify_via_agentteams(self, stage: State, worker_output: str) -> tuple[str, str]:
-        """通过确定性脚本 + AgentTeams 的裁判 Worker 做质量判断。
-
-        与旧 _verify() 的关键区别：
-          - 旧方案：创建 MAF Agent 实例，手动调 LLM 做判断
-          - 新方案：先跑我们的确定性验证脚本（Ralph 反压），
-            tester/releaser 阶段用真实测试门禁当客观裁判；
-            脚本不可用时再通过 AgentTeams 的裁判 Worker 兜底。
-        """
-        if not worker_output:
-            return "FAIL", "Worker 未产出有效结果（空输出）"
-
-        # 第一步：确定性脚本当裁判（我们的差异化价值，嵌进官方框架）
-        gate = self._run_deterministic_gate(stage, worker_output)
-        if gate is not None:
-            return gate
-
-        # 第二步：AgentTeams 裁判 Worker 兜底（走 Matrix）
-        # 选择裁判 Worker
-        judge_name = "tester" if stage in (State.TEST_VERIFY, State.FIX_APPLY) else "releaser"
-        if stage in (State.RELEASE, State.RELEASE_APPROVE):
-            judge_name = "releaser"
-
-        # 通过 AgentTeams（Matrix）让裁判 Worker 做判断
-        judge_prompt = (
-            f"[验收] 任务 {self.task_id} 当前阶段 {stage.value} 的产物如下：\n"
-            f"{worker_output[:2000]}\n\n"
-            f"请按你的准则做客观评判，严格输出：\n"
-            f"PASS: <通过理由>\n"
-            f"FAIL: <失败原因，供打回>"
-        )
-
-        judge_text = await self._dispatch_to_worker(judge_name, judge_prompt, stage.value)
-        if judge_text.startswith("ERROR"):
-            # 裁判不可用：确定性降级
-            return "PASS", "（AgentTeams 裁判不可用，降级为 PASS）"
-
-        verdict = "FAIL" if judge_text.upper().startswith("FAIL") else "PASS"
-        return verdict, judge_text
-
-    @staticmethod
-    def _is_judge_stage(stage: State) -> bool:
-        """判断当前阶段是否本身就是裁判阶段。"""
-        return stage in (State.TEST_VERIFY, State.RELEASE, State.RELEASE_APPROVE)
-
-    # ------------------------------------------------------------------ #
-    # 阶段通过处理
-    # ------------------------------------------------------------------ #
-    def _on_stage_pass(
-        self, stage: State, executor: str, expected_ms: str,
-        worker_out: str, elapsed: float,
-    ) -> None:
-        """阶段通过时的处理：推进状态机、落盘产物、记录评价。"""
-        role = get_role(executor)
-        milestone_ok = expected_ms in worker_out
-        handoff_ok = (not role.handoff_to) or ("@" in worker_out) or (role.handoff_to in worker_out)
-        self.protocol_by_agent[executor] = milestone_ok and handoff_ok
-        self.adoption_by_agent[executor] = adoption_score(worker_out, self.spec)
-
-        new_state = self.state.advance(
-            STATE_EXPECTED_MILESTONE[stage],
-            verdict="PASS", detail=worker_out[:200], by=executor,
-        )
-
-        # 落盘产物
-        artifact_path = self.tasks_dir / f"{stage.value.lower()}.md"
-        artifact_path.write_text(worker_out, encoding="utf-8")
-        self.state.artifacts[stage.value] = str(artifact_path)
-
-        # 上下文卸载
-        context_ref = self.ctx.offload_to_file(
-            f"# {stage.value} 产物\n\n{worker_out}",
-            prefix=f"stage_{stage.value.lower()}"
-        )
-        print(f"  → 上下文卸载: {context_ref[:80]}...")
-
-        # 记录迭代结果
-        self.ctx.record_iteration_result(
-            outcome=f"{stage.value} 通过 @{executor}",
-            decisions=[{"decision": f"推进到 {new_state.value}", "justification": worker_out[:200]}],
-            improvements=[],
-            metrics={"elapsed": elapsed, "tokens": TokenEstimator.estimate(worker_out)},
-        )
-
-        self.state.save(self.tasks_dir / "state.json")
-        print(f"  ✔ 里程碑 {expected_ms} 达成 → 状态 → {new_state.value}")
-
-    # ------------------------------------------------------------------ #
-    # 状态同步
+    # 状态同步：从 Matrix 消息中提取里程碑，同步到本地状态机
     # ------------------------------------------------------------------ #
     def _sync_state_from_milestones(self, milestones: list[dict[str, str]]) -> None:
-        """将 AgentTeams 检测到的里程碑同步到本地状态机。"""
+        """将 AgentTeams Matrix 房间中检测到的里程碑同步到本地状态机。
+
+        这是观测层：本地状态机镜像 AgentTeams 平台的实际进度，
+        不做调度决策，只用于展示和评价。
+        """
         milestone_to_state = {
             "TASK_SPEC_READY": State.SPEC_DECOMPOSE,
             "ROOT_CAUSE_FOUND": State.ROOT_CAUSE,
@@ -653,23 +280,33 @@ class AgentTeamsLoop:
                 }
                 self.state.state = state
                 print(f"  → 状态同步: {ms_name} ← @{worker}")
+                self.audit.log_milestone(self.task_id, worker, ms_name,
+                                         state=state.value, result="PASS")
             elif ms_name == "TEST_FAILED":
-                self.state.state = State.FIX_APPLY  # 打回
+                self.state.state = State.FIX_APPLY
                 self.reject_by_agent["fixer"] = self.reject_by_agent.get("fixer", 0) + 1
+                self.audit.log_milestone(self.task_id, worker, ms_name,
+                                         state="FIX_APPLY", result="FAIL")
             elif ms_name == "RELEASE_ROLLED_BACK":
-                self.state.state = State.FIX_APPLY  # 打回
+                self.state.state = State.FIX_APPLY
                 self.reject_by_agent["fixer"] = self.reject_by_agent.get("fixer", 0) + 1
+                self.audit.log_milestone(self.task_id, worker, ms_name,
+                                         state="FIX_APPLY", result="FAIL")
 
     # ------------------------------------------------------------------ #
     # 报告
     # ------------------------------------------------------------------ #
     def _print_summary(self) -> None:
-        print("\n=== AgentTeams Loop 结束（编排模式）===")
+        print("\n=== AgentTeams 任务完成 ===")
         print(f"最终状态: {self.state.state.value}")
         print(f"里程碑: {list(self.state.milestones.keys())}")
         print(f"产物: {list(self.state.artifacts.values())}")
-        print("\n" + self.ctx.metrics.report())
-        print(f"上下文快照: {self.ctx.snapshot()['budget']}")
+        # GAP-13: 委托模式下 ctx 为 None，跳过本地上下文指标（真实指标在 AgentTeams 平台侧）
+        if self.ctx is not None:
+            print("\n" + self.ctx.metrics.report())
+            print(f"上下文快照: {self.ctx.snapshot()['budget']}")
+        else:
+            print("（委托模式：上下文预算/性能指标由 AgentTeams 平台维护）")
 
     def _print_evaluation(self) -> None:
         evaluation = score_team(
@@ -692,37 +329,100 @@ class AgentTeamsLoop:
                 print(f"  {cmd}")
 
     # ------------------------------------------------------------------ #
-    # Mock 模式
+    # Agent 独立记忆
     # ------------------------------------------------------------------ #
-    async def _run_mock(self, max_stages: int) -> TaskState:
-        """Mock 模式：确定性假实现，秒级跑完完整 PDCA 闭环。"""
-        print("  [Mock] 模拟 AgentTeams PDCA 闭环")
+
+    def _init_agent_memories(self) -> None:
+        """初始化所有 Agent 的独立记忆空间。"""
+        agent_names = [
+            "aggregator", "rootcause", "fixer",
+            "tester", "releaser", "retrospector", "manager",
+        ]
+        for name in agent_names:
+            self.agent_memories[name] = AgentMemory(
+                agent_name=name,
+                storage_dir=self.workdir / "shared",
+            )
+
+    def record_agent_iteration(self, agent_name: str, phase: str, outcome: str,
+                               mistakes: list[str] | None = None,
+                               fixes: list[str] | None = None,
+                               patterns: list[str] | None = None,
+                               retry_count: int = 0) -> None:
+        """记录一次 Agent 迭代结果到该 Agent 的独立记忆。"""
+        # GAP-13: 委托模式下 agent_memories / ctx 未初始化，直接跳过（记忆由 AgentTeams 平台维护）
+        if self.ctx is None or not self.agent_memories:
+            return
+        mem = self.agent_memories.get(agent_name)
+        if not mem:
+            return
+        entry = AgentMemoryEntry(
+            task_id=self.task_id,
+            iteration=self.ctx.protocol.current_iteration,
+            phase=phase,
+            outcome=outcome,
+            mistakes=mistakes or [],
+            fixes=fixes or [],
+            patterns=patterns or [],
+            retry_count=retry_count,
+        )
+        mem.record_iteration(entry)
+
+    def consolidate_all_agent_memories(self) -> dict[str, int]:
+        """将所有 Agent 的近期迭代记录沉淀为长期记忆。"""
+        # GAP-13: 委托模式下 agent_memories 为空，直接跳过
+        if not self.agent_memories:
+            return {}
+        results = {}
+        for name, mem in self.agent_memories.items():
+            count = mem.consolidate_to_long_term()
+            if count > 0:
+                results[name] = count
+        return results
+
+    # ------------------------------------------------------------------ #
+    # Mock 模式：演示完整 PDCA 闭环（不依赖 AgentTeams 平台）
+    # ------------------------------------------------------------------ #
+    async def _run_mock(self) -> TaskState:
+        """Mock 模式：确定性假实现，秒级跑完完整 PDCA 闭环。
+
+        仅在本地演示时使用，不依赖 AgentTeams 平台。
+        """
+        # GAP-13: mock 模式下确保本地上下文工程组件已初始化（双保险）
+        self._ensure_local_contexts()
+        print("  [Mock] 模拟 AgentTeams PDCA 闭环（不连平台）")
         await self.event_bus.task_started(self.task_id, self.spec)
+
+        # Mock 闭环产出：让 SPEC_INPUT / FIX_APPLY 阶段贴合本次 spec，
+        # 使演示叙事一致（默认缺陷修复语义；建站类任务会显示对应产出）。
+        # 保持既有测试契约不变：每状态一个产物 md、6 里程碑、8 个状态流转。
+        spec_head = (self.spec or "").splitlines()[0][:60]
         mock_outputs = {
-            State.SPEC_INPUT: "TASK_SPEC_READY\n\n任务规格：修复登录页面空指针异常\n验收标准：登录功能正常\n涉及模块：login.py",
-            State.SPEC_DECOMPOSE: "TASK_SPEC_READY\n\n子任务：\n1. 定位空指针根因\n2. 修复代码\n3. 测试验证",
-            State.ROOT_CAUSE: "ROOT_CAUSE_FOUND\n\n根因：login.py 第 42 行未对 user 对象做空值检查\n影响面：所有登录请求",
-            State.FIX_APPLY: "FIX_APPLIED\n\n修复：在 login.py 第 42 行前添加 if user is None: return error\n改动文件：login.py",
-            State.TEST_VERIFY: "TEST_PASSED\n\n测试用例：空值输入、正常输入、边界值\n覆盖：100%\n结论：PASS",
-            State.RELEASE: "RELEASE_OK\n\n发布策略：灰度 10%\n回滚预案：kubectl rollout undo\n审批：通过",
-            State.RELEASE_APPROVE: "RELEASE_OK\n\n灰度验证通过，全量发布",
-            State.RETROSPECT: "RETROSPECT_DONE\n\n经验教训：\n1. 所有外部输入必须做空值检查\n2. 单元测试应覆盖边界条件",
+            State.SPEC_INPUT: f"TASK_SPEC_READY\n\n任务规格：{spec_head}\n验收标准：按 spec 完成并验证\n产出：确定性实现",
+            State.SPEC_DECOMPOSE: "TASK_SPEC_READY\n\n子任务：\n1. 解析需求\n2. 产出实现\n3. 测试验证",
+            State.ROOT_CAUSE: "ROOT_CAUSE_FOUND\n\n根因：任务可确定性实现\n影响面：目标产物",
+            State.FIX_APPLY: f"FIX_APPLIED\n\n产出：{spec_head}\n改动文件：index.html / style.css / app.js（按需）",
+            State.TEST_VERIFY: "TEST_PASSED\n\n测试用例：结构完整性、关键逻辑、边界值\n覆盖：100%\n结论：PASS",
+            State.RELEASE: "RELEASE_OK\n\n发布策略：静态站点\n回滚预案：保留上一版本\n审批：通过",
+            State.RELEASE_APPROVE: "RELEASE_OK\n\n验证通过，发布",
+            State.RETROSPECT: "RETROSPECT_DONE\n\n经验教训：\n1. 确定性建站应拆分为结构/样式/逻辑三部分\n2. 静态站点无后端依赖，易于验证",
         }
 
-        for stage in [
+        stages = [
             State.SPEC_INPUT, State.SPEC_DECOMPOSE, State.ROOT_CAUSE,
             State.FIX_APPLY, State.TEST_VERIFY, State.RELEASE,
             State.RELEASE_APPROVE, State.RETROSPECT,
-        ]:
+        ]
+
+        for stage in stages:
             executor = STATE_EXECUTOR[stage]
             expected_ms = STATE_EXPECTED_MILESTONE[stage].value
             output = mock_outputs.get(stage, f"{expected_ms}\n\nMock 产出")
 
             print(f"\n  阶段 {stage.value} → {executor}: {output[:80]}...")
 
-            # 发射事件（mock 模式也走 EventBus）
             await self.event_bus.worker_started(executor, self.task_id)
-            await asyncio.sleep(0.05)  # 模拟耗时
+            await asyncio.sleep(0.05)
             await self.event_bus.worker_completed(
                 executor, self.task_id, expected_ms, elapsed=0.05,
             )
@@ -733,6 +433,14 @@ class AgentTeamsLoop:
                 verdict="PASS", detail=output[:200], by=executor,
             )
 
+            # 记录到该 Agent 的独立记忆（跨任务持久化）
+            self.record_agent_iteration(
+                agent_name=executor,
+                phase=stage.value.lower(),
+                outcome="success",
+                patterns=[f"完成 {stage.value} 阶段"],
+            )
+
             artifact_path = self.tasks_dir / f"{stage.value.lower()}.md"
             artifact_path.write_text(output, encoding="utf-8")
             self.state.artifacts[stage.value] = str(artifact_path)
@@ -740,55 +448,46 @@ class AgentTeamsLoop:
             self.protocol_by_agent[executor] = True
             self.adoption_by_agent[executor] = 1.0
 
+            self.audit.log_milestone(self.task_id, executor, expected_ms,
+                                     state=stage.value, result="PASS")
+
             if stage == State.RETROSPECT:
                 break
+
+        # 沉淀所有 Agent 的记忆到长期记忆
+        consolidated = self.consolidate_all_agent_memories()
+        if consolidated:
+            print(f"\n  [记忆沉淀] {len(consolidated)} 个 Agent 的记忆已更新长期记忆")
 
         await self.event_bus.task_completed(self.task_id)
         self._print_summary()
         self._print_evaluation()
         return self.state
 
-    def _mock_worker_output(self, worker_name: str, milestone: str) -> str:
-        """Mock Worker 输出。"""
-        mock_map = {
-            "aggregator": f"TASK_SPEC_READY\n\n任务规格：{self.spec[:80]}\n（mock 聚合）",
-            "rootcause": f"ROOT_CAUSE_FOUND\n\n根因：示例根因分析\n（mock 定位）",
-            "fixer": f"FIX_APPLIED\n\n修复：示例代码修复\n（mock 修复）",
-            "tester": f"TEST_PASSED\n\n测试通过\n（mock 测试）",
-            "releaser": f"RELEASE_OK\n\n发布审批通过\n（mock 发布）",
-            "retrospector": f"RETROSPECT_DONE\n\n复盘完成\n（mock 复盘）",
-        }
-        return mock_map.get(worker_name, f"{milestone}\n\nMock 产出")
-
 
 # ========================================================================== #
-# 2. 便捷函数
+# 便捷函数
 # ========================================================================== #
 
 async def run_pdca_task(
     spec: str,
     workdir: str | Path | None = None,
-    mode: str = "delegated",
     mock: bool = False,
     task_id: str = "",
 ) -> TaskState:
-    """一键运行 PDCA 闭环任务。
+    """一键运行 PDCA 闭环任务（提交给 AgentTeams Manager）。
 
     Args:
         spec: 任务规格描述
         workdir: 工作目录
-        mode: "delegated" 或 "orchestrated"
-        mock: 是否使用 mock 模式
+        mock: 是否使用 mock 模式（不连 AgentTeams 平台）
         task_id: 任务 ID（不传则自动生成）
 
     Returns:
         最终的 TaskState
 
     用法:
-        state = await run_pdca_task(
-            spec="修复登录页面空指针异常",
-            mode="delegated",
-        )
+        state = await run_pdca_task(spec="修复登录页面空指针异常")
     """
     if not task_id:
         task_id = f"pdca-{int(time.time())}"
@@ -799,7 +498,6 @@ async def run_pdca_task(
         task_id=task_id,
         spec=spec,
         workdir=workdir,
-        mode=mode,
         mock=mock,
     )
     return await loop.run()
@@ -812,7 +510,7 @@ async def check_platform_ready() -> dict[str, Any]:
 
 
 # ========================================================================== #
-# 3. 自检
+# 自检
 # ========================================================================== #
 
 async def _self_test():
@@ -826,7 +524,6 @@ async def _self_test():
             task_id="test-001",
             spec="修复登录页面空指针异常",
             workdir=Path(tmpdir),
-            mode="orchestrated",
             mock=True,
         )
 

@@ -1,5 +1,8 @@
 # 官方是怎么建议的：MAF 多 Agent 协同指南 & 可复用能力清单
 
+> ⚠️ **本文档仅作「选型对比参考」，非参赛实现。**
+> 参赛协同基点为阿里官方 **AgentTeams**；本文内容仅用于论证「为何选 AgentTeams 而非 MAF」，不作为参赛可运行实现的一部分。
+
 > 本文基于 MAF（Microsoft Agent Framework）**本地官方源码与文档**调研整理。
 > 源码位置：`references/agent-framework/python/`（只读，不修改）。
 > 目的：回答「官方对多 Agent 协同怎么建议」「有哪些现成能力可以直接复用」，并映射到我们的参赛作品（软件研发多 Agent 闭环）。

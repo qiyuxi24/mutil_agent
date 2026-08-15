@@ -1,5 +1,81 @@
+# ===== GOAI 大赛参赛仓库忽略规则 =====
+# 本文件用于排除所有「与参赛无关」的本地运行产物、日志、敏感凭据与第三方参考代码。
+# 提交前请确保 `git status` 干净，只包含 software-dev-fullflow/ 下的参赛内容。
+
 # ===== IDE / 工作记忆（不纳入版本库）=====
 .codebuddy/
 
 # ===== 第三方参考仓库（浅克隆，仅参考，不参与参赛）=====
 mattpocock-skills/
+software-dev-fullflow/references/
+
+# ===== 根目录 / 项目运行日志 =====
+*.log
+*.err
+*.out
+agentscope_e.log
+agentscope_o.log
+e.log
+o.log
+
+# ===== 敏感凭据与部署快照（绝不提交）=====
+*.env
+.env
+.env.local
+.env.*.local
+!*.env.example
+controller-env-backup-*.txt
+controller-env-*.json
+scripts/controller-env-*
+
+# ===== 运行时数据（gitignore 保护，不入库）=====
+software-dev-fullflow/data/
+software-dev-fullflow/shared/
+software-dev-fullflow/src/data/
+software-dev-fullflow/src/shared/
+
+# ===== Python 产物与虚拟环境 =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+demo/.venv/
+demo/venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+htmlcov/
+.coverage
+
+# ===== 测试运行产物 =====
+software-dev-fullflow/tests/e2e/reports/
+*.pytest_cache
+
+# ===== Demo 运行产物（保留源码与设计文档，忽略运行日志/临时产物）=====
+software-dev-fullflow/demo/e2e-log-*.txt
+software-dev-fullflow/demo/*.log
+software-dev-fullflow/demo/*.err
+software-dev-fullflow/demo/mbti-site-e2e-*/
+software-dev-fullflow/demo/loongsuite/*.log
+
+# ===== 无关的 CI/工作流（保留参赛相关的 .github/workflows/e2e-tests.yml）=====
+.github/modernize/
+
+# ===== 归档 / 探索性脚本（不参与正式交付）=====
+software-dev-fullflow/scripts/archive/
+
+# ===== 系统/编辑器 =====
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*~
+.idea/
+.vscode/

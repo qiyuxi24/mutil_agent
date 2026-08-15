@@ -1,7 +1,8 @@
 # ============================================================
 # MCP Server 模板：团队自建「测试平台」REST API → MCP 工具
+# 后端真实实现：src/agentteams/toolchains/test_platform_service.py（阿里 AgentScope 实现）
 # 对齐官方 mcp-github.yaml 格式（Higress 网关用）
-# 用法：bash setup-mcp-server.sh test-platform "<YOUR_API_KEY>" --yaml-file mcp-test-platform.yaml --api-domain api.test.example.com
+# 用法：bash setup-mcp-server.sh test-platform "<YOUR_API_KEY>" --yaml-file mcp-test-platform.yaml --api-domain host.docker.internal:9200
 # 说明：
 #   - server.config.accessToken 是统一凭据 key，脚本会替换为真实 key
 #   - tools[].requestTemplate 支持 Go template：{{.args.xxx}}、{{.config.xxx}}、{{.args.x | default "val"}} 等
@@ -9,6 +10,7 @@
 #   - 凭据通过 {{.config.accessToken}} 注入 header，Worker 看不到真实 key
 # 本模板服务对象：tester（测试验证员），作为「确定性验证闸门」的真实工具链。
 # 与 code-gen 的 mcp-code-scan.yaml 配合：fixer 扫描 → tester 跑测试 → 判定 PASS/FAIL。
+# 后端地址 host.docker.internal:9200 = 宿主机上运行的服务（Docker Desktop 专属桥接域名）
 # ============================================================
 
 server:
@@ -33,7 +35,7 @@ tools:
     required: false
     description: "测试套件过滤：unit|integration|e2e，默认全跑"
   requestTemplate:
-    url: "https://api.test.example.com/v1/runs"
+    url: "http://host.docker.internal:9200/v1/runs"
     method: POST
     body: |
       {
@@ -55,7 +57,7 @@ tools:
     required: true
     description: "测试执行任务 ID（来自 run_tests）"
   requestTemplate:
-    url: "https://api.test.example.com/v1/runs/{{.args.run_id}}"
+    url: "http://host.docker.internal:9200/v1/runs/{{.args.run_id}}"
     method: GET
     headers:
     - key: Authorization
@@ -73,7 +75,7 @@ tools:
     required: false
     description: "分支，默认 main"
   requestTemplate:
-    url: "https://api.test.example.com/v1/coverage?repo={{.args.repo}}&branch={{.args.branch | default \"main\"}}"
+    url: "http://host.docker.internal:9200/v1/coverage?repo={{.args.repo}}&branch={{.args.branch | default \"main\"}}"
     method: GET
     headers:
     - key: Authorization
@@ -91,7 +93,7 @@ tools:
     required: false
     description: "分支，默认 main"
   requestTemplate:
-    url: "https://api.test.example.com/v1/static-analysis"
+    url: "http://host.docker.internal:9200/v1/static-analysis"
     method: POST
     body: |
       {

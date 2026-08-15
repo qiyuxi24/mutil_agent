@@ -1,0 +1,47 @@
+kind: entity_set
+schema:
+  url: "umodel.aliyun.com"
+  version: "v0.1.0"
+metadata:
+  name: "dev.root_cause"
+  domain: dev
+  display_name:
+    en_us: "Root Cause Analysis"
+    zh_cn: "根因分析"
+  description:
+    en_us: "A root-cause analysis produced by the RootCause worker, with evidence and impact scope."
+    zh_cn: "由根因定位员产出的根因分析（含证据与影响范围）。"
+spec:
+  fields:
+    - name: id
+      type: string
+      display_name: { en_us: "ID", zh_cn: "ID" }
+      description: { en_us: "Stable RCA identifier.", zh_cn: "稳定根因分析标识。" }
+    - name: symptom
+      type: string
+      display_name: { en_us: "Symptom", zh_cn: "症状" }
+      description: { en_us: "Observed symptom being explained.", zh_cn: "待解释的观察症状。" }
+    - name: evidence
+      type: json
+      display_name: { en_us: "Evidence", zh_cn: "证据" }
+      description: { en_us: "Evidence list with source references.", zh_cn: "带来源引用的证据列表。" }
+    - name: root_cause
+      type: string
+      display_name: { en_us: "Root Cause", zh_cn: "根因" }
+      description: { en_us: "The concluded root cause.", zh_cn: "定位出的根因。" }
+    - name: confidence
+      type: string
+      display_name: { en_us: "Confidence", zh_cn: "置信度" }
+      description: { en_us: "Confidence level (high/medium/low).", zh_cn: "置信度等级。" }
+    - name: impact_scope
+      type: string
+      display_name: { en_us: "Impact Scope", zh_cn: "影响范围" }
+      description: { en_us: "Affected modules/services/users.", zh_cn: "受影响模块/服务/用户。" }
+  primary_key_fields:
+    - id
+  id_generator: "id"
+  name_fields:
+    - root_cause
+  ordered_fields: ["id", "symptom", "root_cause", "confidence", "impact_scope"]
+  first_observed_time_field: "__first_observed_time__"
+  last_observed_time_field: "__last_observed_time__"

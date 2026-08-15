@@ -1,0 +1,23 @@
+kind: entity_set_link
+schema:
+  url: "umodel.aliyun.com"
+  version: "v0.1.0"
+metadata:
+  name: "dev.patch_committed_by_dev.worker"
+  domain: dev
+  display_name:
+    en_us: "Patch Committed By Worker"
+    zh_cn: "补丁由 Worker 提交"
+  description:
+    en_us: "A code patch is committed by a worker (the fixer agent)."
+    zh_cn: "一个代码补丁由某个 Worker（修复工程师）提交。"
+spec:
+  src:
+    domain: dev
+    kind: entity_set
+    name: dev.patch
+  dest:
+    domain: dev
+    kind: entity_set
+    name: dev.worker
+  entity_link_type: committed_by

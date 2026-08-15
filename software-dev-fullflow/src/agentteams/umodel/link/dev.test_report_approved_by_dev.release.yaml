@@ -1,0 +1,23 @@
+kind: entity_set_link
+schema:
+  url: "umodel.aliyun.com"
+  version: "v0.1.0"
+metadata:
+  name: "dev.test_report_approved_by_dev.release"
+  domain: dev
+  display_name:
+    en_us: "Test Report Approved By Release"
+    zh_cn: "测试报告被发布确认"
+  description:
+    en_us: "A passing test report is approved by a release confirmation gate."
+    zh_cn: "一份通过的测试报告被发布确认门禁批准。"
+spec:
+  src:
+    domain: dev
+    kind: entity_set
+    name: dev.test_report
+  dest:
+    domain: dev
+    kind: entity_set
+    name: dev.release
+  entity_link_type: approved_by

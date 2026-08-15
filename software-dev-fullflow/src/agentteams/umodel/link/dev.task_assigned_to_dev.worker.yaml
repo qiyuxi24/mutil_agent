@@ -1,0 +1,23 @@
+kind: entity_set_link
+schema:
+  url: "umodel.aliyun.com"
+  version: "v0.1.0"
+metadata:
+  name: "dev.task_assigned_to_dev.worker"
+  domain: dev
+  display_name:
+    en_us: "Task Assigned To Worker"
+    zh_cn: "任务分配给 Worker"
+  description:
+    en_us: "A development task is assigned to a worker (owner) for execution."
+    zh_cn: "一个研发任务被分配给某个 Worker（负责人）执行。"
+spec:
+  src:
+    domain: dev
+    kind: entity_set
+    name: dev.task
+  dest:
+    domain: dev
+    kind: entity_set
+    name: dev.worker
+  entity_link_type: assigned_to

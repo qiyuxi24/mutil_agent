@@ -1,0 +1,26 @@
+kind: minio
+schema:
+  url: "umodel.aliyun.com"
+  version: "v0.1.0"
+metadata:
+  name: "dev.minio.tasks"
+  domain: dev
+  display_name:
+    en_us: "MinIO Shared Tasks Store"
+    zh_cn: "MinIO 共享任务存储"
+  description:
+    en_us: "S3-compatible object store backing shared/tasks/ (task state + stage artifacts)."
+    zh_cn: "支撑 shared/tasks/ 的 S3 兼容对象存储（任务状态 + 各阶段产物）。"
+spec:
+  type: minio
+  endpoint: "minio.agentteams:9000"
+  bucket: "shared"
+  prefix: "tasks"
+  access_mode: readwrite
+  default_limit: 1000
+  max_limit: 10000
+  read_only: false
+  tls_mode: preferred
+  tags:
+    role: shared-state
+    owner: manager

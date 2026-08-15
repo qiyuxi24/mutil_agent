@@ -1,0 +1,23 @@
+kind: entity_set_link
+schema:
+  url: "umodel.aliyun.com"
+  version: "v0.1.0"
+metadata:
+  name: "dev.root_cause_fixed_by_dev.patch"
+  domain: dev
+  display_name:
+    en_us: "Root Cause Fixed By Patch"
+    zh_cn: "根因被补丁修复"
+  description:
+    en_us: "A root-cause analysis is fixed by one or more code patches."
+    zh_cn: "一个根因分析被一个或多个代码补丁修复。"
+spec:
+  src:
+    domain: dev
+    kind: entity_set
+    name: dev.root_cause
+  dest:
+    domain: dev
+    kind: entity_set
+    name: dev.patch
+  entity_link_type: fixed_by

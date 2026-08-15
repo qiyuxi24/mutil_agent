@@ -33,8 +33,20 @@ spec:
     - issue-parsing
     - knowledge-rag
     - evidence-log
-  mcpServers:                 # aggregator 通过 Higress 网关拉取真实 Issue/需求
-    - github
+    - umodel-query            # 按统一数据模型读共享任务/知识库（官方 UModel）
+  mcpServers:                 # aggregator 拉取真实 Issue/需求 + 网页搜索 + UModel 统一数据层
+                              # 格式对齐 AgentTeams v1.1.1+ 声明式 MCP：{name,url,transport}
+                              # 注：端点尚未真实注册到 Higress（GAP-15 复赛做），
+                              #     先以网关标准路径占位，apply 通过即演示声明式 MCP 能力，闭环靠 L1 shell 兜底
+    - name: github
+      url: http://aigw-local.agentteams.io:8080/mcp-servers/github/mcp
+      transport: http
+    - name: websearch
+      url: http://aigw-local.agentteams.io:8080/mcp-servers/websearch/mcp
+      transport: http
+    - name: umodel
+      url: http://aigw-local.agentteams.io:8080/mcp-servers/umodel/mcp
+      transport: http
   state: Running
 ---
 apiVersion: agentteams.io/v1beta1
@@ -62,8 +74,18 @@ spec:
     - code-search
     - knowledge-rag
     - evidence-log
-  mcpServers:                 # rootcause 通过 Higress 网关读真实仓库代码/搜索/blame
-    - github
+    - umodel-query            # 按统一数据模型读实体/关系/模型（官方 UModel）
+    - umodel-rca              # 在 UModel 对象图上做模型引导根因分析
+  mcpServers:                 # rootcause 读真实仓库代码 + 网页搜索 + UModel 统一数据层
+    - name: github
+      url: http://aigw-local.agentteams.io:8080/mcp-servers/github/mcp
+      transport: http
+    - name: websearch
+      url: http://aigw-local.agentteams.io:8080/mcp-servers/websearch/mcp
+      transport: http
+    - name: umodel
+      url: http://aigw-local.agentteams.io:8080/mcp-servers/umodel/mcp
+      transport: http
   state: Running
 ---
 apiVersion: agentteams.io/v1beta1
@@ -89,9 +111,17 @@ spec:
     - repo-context
     - code-search
     - evidence-log
+    - umodel-query            # 按统一数据模型读任务/根因/补丁实体（官方 UModel）
   mcpServers:                 # fixer 通过 Higress 网关调用代码托管 + 扫描工具链
-    - github
-    - code-scan
+    - name: github
+      url: http://aigw-local.agentteams.io:8080/mcp-servers/github/mcp
+      transport: http
+    - name: code-scan
+      url: http://aigw-local.agentteams.io:8080/mcp-servers/code-scan/mcp
+      transport: http
+    - name: umodel
+      url: http://aigw-local.agentteams.io:8080/mcp-servers/umodel/mcp
+      transport: http
   state: Running
 ---
 apiVersion: agentteams.io/v1beta1
@@ -114,8 +144,14 @@ spec:
   skills:
     - test-generation
     - evidence-log
+    - umodel-query            # 按统一数据模型读补丁/测试用例实体（官方 UModel）
   mcpServers:                 # tester 通过 Higress 网关调用测试平台工具链
-    - test-platform
+    - name: test-platform
+      url: http://aigw-local.agentteams.io:8080/mcp-servers/test-platform/mcp
+      transport: http
+    - name: umodel
+      url: http://aigw-local.agentteams.io:8080/mcp-servers/umodel/mcp
+      transport: http
   state: Running
 ---
 apiVersion: agentteams.io/v1beta1
@@ -138,8 +174,14 @@ spec:
   skills:
     - release-gate
     - evidence-log
+    - umodel-query            # 按统一数据模型读测试报告/发布实体（官方 UModel）
   mcpServers:                 # releaser 通过 Higress 网关触发发布/回滚流水线（可选，无真实 CI 时用 L1 shell 兜底）
-    - ci
+    - name: ci
+      url: http://aigw-local.agentteams.io:8080/mcp-servers/ci/mcp
+      transport: http
+    - name: umodel
+      url: http://aigw-local.agentteams.io:8080/mcp-servers/umodel/mcp
+      transport: http
   state: Running
 ---
 apiVersion: agentteams.io/v1beta1
@@ -163,4 +205,9 @@ spec:
     - retrospective
     - knowledge-rag
     - evidence-log
+    - umodel-query            # 按统一数据模型读发布/复盘实体（官方 UModel）
+  mcpServers:                 # retrospector 读 UModel 统一对象图 + 内置 RAG 写知识库
+    - name: umodel
+      url: http://aigw-local.agentteams.io:8080/mcp-servers/umodel/mcp
+      transport: http
   state: Running

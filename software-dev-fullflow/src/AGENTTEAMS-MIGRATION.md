@@ -3,6 +3,11 @@
 > 目的：梳理「已实现的东西」vs「AgentTeams 平台真实能力」，给出从 `src/loop`（MAF 参考实现）
 > 迁移到 **AgentTeams（比赛官方协同基点）** 的完整路径。
 > 日期：2026-08-13
+> 
+> **2026-08-14 更新**：已完成问题1修复 —— `agentteams_loop.py` 已从"调度引擎"降级为"Python 客户端"。
+> 删除了 `_run_orchestrated()` 模式（手动 Worker 调度、验证闸门、阶段控制），
+> 现在只保留 `_run_delegated()`（委托 AgentTeams Manager）和 `_run_mock()`（本地演示）。
+> 详见 [问题分析报告](#) 和 `agentteams_loop.py` 文件头注释。
 
 ---
 

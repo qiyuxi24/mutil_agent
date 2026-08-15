@@ -1,0 +1,27 @@
+# Team CR（v1.2.0 契约）：1 Team Leader + 6 职能 Worker
+# 用途：把 6 个平铺 Worker 组织成「软件研发全流程协同」子团队，强化多 Agent 协同叙事。
+# 用法（controller 容器内）：
+#   docker cp team-rnd.yaml agentteams-controller:/tmp/team-rnd.yaml
+#   docker exec agentteams-controller agt apply -f /tmp/team-rnd.yaml
+# 前置：
+#   1. team-leader Worker CR 必须先创建（src/agentteams/team-leader.yaml）
+#   2. aggregator/rootcause/fixer/tester/releaser/retrospector 六个 Worker CR 已存在
+# 校验：workerMembers 必须恰好 1 个 role=team_leader（CRD 强制，否则失败）
+
+apiVersion: agentteams.io/v1beta1
+kind: Team
+metadata:
+  name: rnd-team
+spec:
+  description: 软件研发全流程协同团队（1 Leader + 6 职能 Worker）
+  teamName: rnd-team
+  peerMentions: true
+  heartbeatEvery: 30m
+  workerMembers:
+    - { name: team-leader,   role: team_leader }
+    - { name: aggregator,    role: worker }
+    - { name: rootcause,     role: worker }
+    - { name: fixer,         role: worker }
+    - { name: tester,        role: worker }
+    - { name: releaser,      role: worker }
+    - { name: retrospector,  role: worker }

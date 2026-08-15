@@ -1,29 +1,29 @@
-"""研发团队调度 Loop 交互入口 —— AgentTeams 原生版。
+"""研发团队调度 Loop 交互入口 —— AgentTeams 客户端。
 
 跑一条完整的「缺陷/需求 → 根因 → 修复 → 测试 → 发布 → 复盘」PDCA 闭环，
-由 **AgentTeams 官方框架**调度 6 个研发 Worker 接力完成（协同基点：阿里 AgentTeams）。
+由 **AgentTeams 平台**的 Manager 调度 6 个研发 Worker 接力完成。
 
-交互方式（按丰富度递增）：
+本模块是 AgentTeams 的 Python 客户端，负责：
+  - 接收用户输入
+  - 提交任务给 AgentTeams Manager
+  - 监控进度并展示结果
+
+交互方式：
   1. 命令行一键运行：  run.py "修复登录页面空指针异常"
   2. 交互式输入：        run.py --interactive
   3. Rich 终端仪表盘：    run.py --dashboard "你的任务描述"
   4. Web 浏览器仪表盘：   run.py --web "你的任务描述"
-  5. 仪表盘 + 交互命令：  run.py --dashboard --interactive
+  5. Mock 演示：          run.py --mock --dashboard "演示任务"
 
 用法：
     cd software-dev-fullflow\src
     ..\demo\.venv\Scripts\python.exe run.py
     ..\demo\.venv\Scripts\python.exe run.py "你的缺陷/需求描述"
     ..\demo\.venv\Scripts\python.exe run.py --mock --dashboard "演示任务"
-    ..\demo\.venv\Scripts\python.exe run.py --interactive --mode orchestrated
 
 环境变量：
     - AgentTeams 连通：AGT_MODE / AGT_CONTROLLER（默认 docker / agentteams-controller）
     - mock 模式不需要任何 API key
-
-运行模式（--mode）：
-    delegated     委托给 AgentTeams 的 Manager（LLM 驱动，推荐，Matrix 留痕）
-    orchestrated  Python 控制流水线 + 确定性验证闸门（tester/releaser 阶段真跑测试）
 """
 
 from __future__ import annotations
@@ -41,6 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from loop.agentteams_loop import AgentTeamsLoop  # noqa: E402
 from loop.dashboard import create_dashboard  # noqa: E402
 from loop.web_dashboard import WebDashboard  # noqa: E402
+from loop.evaluation import score_team, governance_action  # noqa: E402
 
 # 默认工作目录：src/data/（运行产物，gitignore）
 DEFAULT_DATA_DIR = Path(__file__).resolve().parent / "data"
@@ -172,6 +173,49 @@ class InteractiveShell:
 
 
 # ========================================================================== #
+# 绩效评价反哺（TODO 3.2）
+# ========================================================================== #
+
+def _print_governance_feedback(loop: AgentTeamsLoop, final) -> None:
+    """闭环后把评价结果反哺为团队治理动作，落到 CLI 输出（叙事"招人/裁员"）。
+
+    依赖 loop 侧采集的评价信号（reject/duration/adoption/protocol），
+    复用 `evaluation.score_team` 与 mock 已落盘的 scorecards。
+    """
+    print("\n" + "=" * 60)
+    print("  绩效评价反哺 → 团队治理命令")
+    print("=" * 60)
+
+    evaluation = score_team(
+        final,
+        reject_counts=loop.reject_by_agent,
+        durations=loop.durations_by_agent,
+        adoptions=loop.adoption_by_agent,
+        protocol_oks=loop.protocol_by_agent,
+    )
+    print("\n" + evaluation.report())
+
+    cmds = evaluation.governance_commands()
+    if cmds:
+        print("\n  治理建议（可执行 → AgentTeams 招人/裁员/培训）:")
+        for cmd in cmds:
+            print(f"    $ {cmd}")
+    else:
+        print("\n  全员绩效达标，无需治理动作（团队留任）。")
+
+    # 治理动作语义一览（叙事卖点）
+    actions = {}
+    for role, card in evaluation.scorecards.items():
+        actions.setdefault(governance_action(role, card.rating), []).append(role)
+    if actions:
+        print("\n  治理动作汇总:")
+        label = {"retain": "留任", "coach": "培训(coach)", "demote_or_fire": "裁员(fire) → 招人补齐(hire)"}
+        for act, roles in actions.items():
+            print(f"    · {label.get(act, act)}: {', '.join(sorted(roles))}")
+    print("=" * 60)
+
+
+# ========================================================================== #
 # 主入口
 # ========================================================================== #
 
@@ -191,26 +235,13 @@ async def main() -> None:
     interactive = "--interactive" in args
     args = [a for a in args if a != "--interactive"]
 
-    mode = "delegated"
-    if "--mode" in args:
-        i = args.index("--mode")
-        try:
-            mode = args[i + 1]
-            del args[i : i + 2]
-        except (IndexError, ValueError):
-            print("参数 --mode 需跟 delegated/orchestrated，忽略。")
-    if mode not in ("delegated", "orchestrated"):
-        print(f"未知模式 {mode}，使用默认 delegated。")
-        mode = "delegated"
-
     # ── 任务输入 ──
     if args:
         spec = " ".join(args)
     else:
         print("╔══════════════════════════════════════════════════╗")
-        print("║  研发团队调度 Loop Demo（AgentTeams 原生）         ║")
+        print("║  研发团队调度 Loop Demo（AgentTeams 客户端）       ║")
         print("╠══════════════════════════════════════════════════╣")
-        print(f"║  运行模式: {mode:<38} ║")
         if mock:
             print("║  mock 模式: 秒级演示完整闭环                       ║")
         if use_dashboard:
@@ -235,7 +266,7 @@ async def main() -> None:
     t0 = datetime.now(timezone.utc)
 
     loop = AgentTeamsLoop(
-        task_id=task_id, spec=spec, workdir=workdir, mode=mode, mock=mock,
+        task_id=task_id, spec=spec, workdir=workdir, mock=mock,
     )
 
     if mock:
@@ -278,6 +309,9 @@ async def main() -> None:
     print(f"\n总耗时: {dt.total_seconds():.1f}s")
     print(f"状态文件: {workdir / 'shared' / 'tasks' / task_id / 'state.json'}")
     print(f"闭环完成: {'是' if final.milestones.get('RETROSPECT_DONE') else '否（被截断/打回上限）'}")
+
+    # 绩效评价反哺（TODO 3.2）：评价结果 → 治理命令（招人/裁员叙事）
+    _print_governance_feedback(loop, final)
 
 
 if __name__ == "__main__":

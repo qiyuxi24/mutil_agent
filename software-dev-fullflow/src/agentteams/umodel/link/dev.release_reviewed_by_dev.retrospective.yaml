@@ -1,0 +1,23 @@
+kind: entity_set_link
+schema:
+  url: "umodel.aliyun.com"
+  version: "v0.1.0"
+metadata:
+  name: "dev.release_reviewed_by_dev.retrospective"
+  domain: dev
+  display_name:
+    en_us: "Release Reviewed By Retrospective"
+    zh_cn: "发布被复盘审视"
+  description:
+    en_us: "A released change is reviewed by a retrospective that distills reusable knowledge."
+    zh_cn: "一次发布被复盘审视，沉淀可复用经验。"
+spec:
+  src:
+    domain: dev
+    kind: entity_set
+    name: dev.release
+  dest:
+    domain: dev
+    kind: entity_set
+    name: dev.retrospective
+  entity_link_type: reviewed_by

@@ -1,0 +1,127 @@
+name: E2E P0 Tests
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'software-dev-fullflow/src/**'
+      - 'software-dev-fullflow/tests/**'
+      - 'software-dev-fullflow/demo/**'
+  pull_request:
+    branches: [main, master]
+    paths:
+      - 'software-dev-fullflow/src/**'
+      - 'software-dev-fullflow/tests/**'
+      - 'software-dev-fullflow/demo/**'
+  workflow_dispatch:
+
+jobs:
+  e2e-tests:
+    name: E2E P0 Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11']
+
+    defaults:
+      run:
+        working-directory: software-dev-fullflow
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('software-dev-fullflow/demo/requirements*.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-${{ matrix.python-version }}-
+
+      - name: Install dependencies
+        run: |
+          python -m venv demo/.venv
+          demo/.venv/bin/pip install --upgrade pip
+          demo/.venv/bin/pip install pytest pytest-asyncio httpx starlette uvicorn sse-starlette
+          demo/.venv/bin/pip install playwright
+          demo/.venv/bin/playwright install chromium --with-deps
+
+      - name: Run E2E P0 Tests
+        run: |
+          demo/.venv/bin/python -m pytest tests/e2e/ -v \
+            --tb=short \
+            --junitxml=tests/e2e/reports/e2e-junit.xml \
+            --html=tests/e2e/reports/e2e-report.html \
+            --self-contained-html \
+            2>&1 | tee tests/e2e/reports/e2e-output.log
+
+      - name: Run Full Test Suite
+        run: |
+          demo/.venv/bin/python -m pytest tests/ -v \
+            --tb=short \
+            --junitxml=tests/e2e/reports/full-junit.xml \
+            --ignore=tests/e2e/test_web_browser_e2e.py \
+            2>&1 | tee tests/e2e/reports/full-output.log
+
+      - name: Upload Test Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-test-reports-py${{ matrix.python-version }}
+          path: |
+            software-dev-fullflow/tests/e2e/reports/
+          retention-days: 30
+
+      - name: Upload Test Results to GitHub
+        if: always()
+        uses: dorny/test-reporter@v1
+        with:
+          name: E2E P0 Tests (Python ${{ matrix.python-version }})
+          path: software-dev-fullflow/tests/e2e/reports/e2e-junit.xml
+          reporter: java-junit
+
+  # Windows 兼容性测试
+  e2e-tests-windows:
+    name: E2E P0 Tests (Windows)
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+
+    defaults:
+      run:
+        working-directory: software-dev-fullflow
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m venv demo\.venv
+          demo\.venv\Scripts\pip install --upgrade pip
+          demo\.venv\Scripts\pip install pytest pytest-asyncio httpx starlette uvicorn sse-starlette playwright
+          demo\.venv\Scripts\playwright install chromium
+
+      - name: Run E2E P0 Tests
+        run: |
+          demo\.venv\Scripts\python -m pytest tests/e2e/ -v --tb=short --junitxml=tests\e2e\reports\e2e-junit-win.xml
+
+      - name: Upload Test Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-test-reports-windows
+          path: software-dev-fullflow/tests/e2e/reports/e2e-junit-win.xml
+          retention-days: 30

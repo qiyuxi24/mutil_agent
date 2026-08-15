@@ -1,0 +1,43 @@
+kind: entity_set
+schema:
+  url: "umodel.aliyun.com"
+  version: "v0.1.0"
+metadata:
+  name: "dev.patch"
+  domain: dev
+  display_name:
+    en_us: "Patch"
+    zh_cn: "修复补丁"
+  description:
+    en_us: "A code fix patch produced by the Fixer, with change summary and rollback plan."
+    zh_cn: "由修复工程师产出的代码修复补丁（含变更摘要与回滚预案）。"
+spec:
+  fields:
+    - name: id
+      type: string
+      display_name: { en_us: "ID", zh_cn: "ID" }
+      description: { en_us: "Stable patch identifier.", zh_cn: "稳定补丁标识。" }
+    - name: change_summary
+      type: string
+      display_name: { en_us: "Change Summary", zh_cn: "变更摘要" }
+      description: { en_us: "Summary of the code change.", zh_cn: "代码变更摘要。" }
+    - name: files
+      type: json
+      display_name: { en_us: "Files", zh_cn: "文件" }
+      description: { en_us: "List of changed files.", zh_cn: "变更文件列表。" }
+    - name: rollback_plan
+      type: string
+      display_name: { en_us: "Rollback Plan", zh_cn: "回滚预案" }
+      description: { en_us: "Rollback strategy if the fix fails.", zh_cn: "修复失败时的回滚策略。" }
+    - name: status
+      type: string
+      display_name: { en_us: "Status", zh_cn: "状态" }
+      description: { en_us: "Patch status (draft/reviewed/merged).", zh_cn: "补丁状态。" }
+  primary_key_fields:
+    - id
+  id_generator: "id"
+  name_fields:
+    - change_summary
+  ordered_fields: ["id", "change_summary", "status", "rollback_plan"]
+  first_observed_time_field: "__first_observed_time__"
+  last_observed_time_field: "__last_observed_time__"

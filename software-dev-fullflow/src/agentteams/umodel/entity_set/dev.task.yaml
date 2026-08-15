@@ -1,0 +1,51 @@
+kind: entity_set
+schema:
+  url: "umodel.aliyun.com"
+  version: "v0.1.0"
+metadata:
+  name: "dev.task"
+  domain: dev
+  display_name:
+    en_us: "Development Task"
+    zh_cn: "研发任务"
+  description:
+    en_us: "A shared development task tracked by the PDCA closed-loop (maps shared/tasks/{id}/state.json)."
+    zh_cn: "由 PDCA 闭环跟踪的共享研发任务（映射 shared/tasks/{id}/state.json）。"
+spec:
+  fields:
+    - name: id
+      type: string
+      display_name: { en_us: "ID", zh_cn: "ID" }
+      description: { en_us: "Stable task identifier.", zh_cn: "稳定任务标识。" }
+    - name: title
+      type: string
+      display_name: { en_us: "Title", zh_cn: "标题" }
+      description: { en_us: "Human-readable task title.", zh_cn: "可读任务标题。" }
+    - name: current_state
+      type: string
+      display_name: { en_us: "Current State", zh_cn: "当前状态" }
+      description: { en_us: "Current PDCA state (SPEC_INPUT/ROOT_CAUSE/FIX_APPLY/TEST_VERIFY/RELEASE/RETROSPECT).", zh_cn: "当前 PDCA 状态。" }
+    - name: milestones
+      type: json
+      display_name: { en_us: "Milestones", zh_cn: "里程碑" }
+      description: { en_us: "Milestone handshake map {name: {at, by}}.", zh_cn: "里程碑握手映射。" }
+    - name: artifacts
+      type: json
+      display_name: { en_us: "Artifacts", zh_cn: "产物" }
+      description: { en_us: "Stage artifacts file paths (spec/root-cause/fix/test-report).", zh_cn: "各阶段产物文件路径。" }
+    - name: rollback_count
+      type: integer
+      display_name: { en_us: "Rollback Count", zh_cn: "回滚次数" }
+      description: { en_us: "Number of rollbacks during this task.", zh_cn: "任务期间的回滚次数。" }
+    - name: owner
+      type: string
+      display_name: { en_us: "Owner", zh_cn: "负责人" }
+      description: { en_us: "Owning worker or team leader.", zh_cn: "负责的 Worker 或团队负责人。" }
+  primary_key_fields:
+    - id
+  id_generator: "id"
+  name_fields:
+    - title
+  ordered_fields: ["id", "title", "current_state", "milestones", "rollback_count", "owner"]
+  first_observed_time_field: "__first_observed_time__"
+  last_observed_time_field: "__last_observed_time__"

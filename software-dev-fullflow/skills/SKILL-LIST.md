@@ -80,8 +80,9 @@
 - **L2 领域层**：7 个核心 Skill（本清单重点，官方必查），对应 6 个职能 Worker，覆盖 PDCA 闭环。
 - **individual 个体工程纪律层**：6 类 9 个 Skill，跨角色通用素养，回答「怎么把活干好」（借鉴 Matt Pocock，详见 `skills/individual/README.md` 与 `references/theory/INDIVIDUAL-ENGINEERING-DISCIPLINES.md`）。
 - **L3 协同层**：1 个协同编排 Skill，归 Manager/Team Leader，驱动闭环状态流转（衔接 `design/PDCA-CLOSED-LOOP.md` 与 `design/MANAGER-LOOP-DESIGN.md`）。
+- **数据层（UModel，2026-08-15 新增）**：`umodel-query`（全部 Worker 按统一数据模型读实体/关系/模型）+ `umodel-rca`（RootCause 模型引导根因分析）。这是阿里官方 UModel 统一数据模型的 Agent 读取面，衔接共享状态/知识库的统一对象图。接入设计见 `design/UNIFIED-MODEL-INTEGRATION.md`。
 
-> ⚠️ 本清单重点展开 **L2 领域层 7 个 Skill**（官方必查项）。L1/L3 属于辅助，在第九节简述，复赛代码包（第 7 项）再完整定义。
+> ⚠️ 本清单重点展开 **L2 领域层 7 个 Skill**（官方必查项）。L1/L3/数据层属于辅助，在第九节简述，复赛代码包（第 7 项）再完整定义。
 
 ---
 
@@ -332,6 +333,13 @@ skills:
 | release-gate | `skills/release-gate/SKILL.md` |
 | retrospective | `skills/retrospective/SKILL.md` |
 | manage-skill（L0 工程层） | `skills/manage-skill/SKILL.md` |
+| git-operations（L1 基座） | `skills/git-operations/SKILL.md` |
+| code-search（L1 基座） | `skills/code-search/SKILL.md` |
+| repo-context（L1 基座） | `skills/repo-context/SKILL.md` |
+| knowledge-rag（L1 基座） | `skills/knowledge-rag/SKILL.md` |
+| evidence-log（L1 基座） | `skills/evidence-log/SKILL.md` |
+
+> L1 基座 5 个 Skill（git-operations/code-search/repo-context/knowledge-rag/evidence-log）当前为**初赛占位空壳**（frontmatter 对齐官方格式），复赛补齐指令正文。GAP-11 核对脚本：`python scripts/verify-skill-refs.py --create`。
 
 > **Skill 工程管理脚本（比赛官方 AgentTeams）**：
 > - 分配：`bash skills/scripts/push-worker-skills.sh --worker <name> --add-skill <skill>`

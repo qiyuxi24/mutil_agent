@@ -1,0 +1,23 @@
+---
+name: code-search
+description: 【初赛占位，复赛补内容】代码检索：ripgrep 全文 + 语义搜索，定位符号/调用/引用
+assign_when: 需要ripgrep 全文 + 语义搜索，定位符号/调用/引用
+---
+
+# Skill: code-search
+
+> ⚠️ 初赛占位空壳：本 Skill 被 `workers.yaml` 引用但内容尚未编写。
+> 复赛需补齐指令正文（对齐官方 9 字段：名称/用途/输入输出/调用条件/依赖工具/失败处理/安全边界/复用价值/协同关系）。
+
+## 状态
+
+- 本文件为 **L1 基座占位**，仅保证 `Worker.spec.skills` 挂载时 Skill 目录存在、引用不悬空。
+- 复赛补内容后再渲染分发：`bash skills/scripts/render-skills.sh skills/code-search`
+
+## 复赛待补
+
+- 输入 / 输出契约
+- 执行步骤（确定性优先）
+- 依赖工具
+- 失败处理
+- 安全边界

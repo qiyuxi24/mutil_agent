@@ -51,6 +51,19 @@ L1 基座被 L2 领域 Skill 依赖，跨多个 Worker 复用：
 
 ---
 
+## 三-b、UModel 统一数据模型 Skill 分配（2026-08-15 新增）
+
+> 引入阿里官方 UModel（统一数据模型）后，新增两个数据层 Skill。接入设计见 `design/UNIFIED-MODEL-INTEGRATION.md`；模型包在 `src/agentteams/umodel/`。
+
+| Skill | 归谁 | assign_when |
+|-------|------|------------|
+| `umodel-query` | **全部 Worker**（aggregator/rootcause/fixer/tester/releaser/retrospector） | 需要按统一数据模型读实体/关系/模型元数据时（读共享状态/知识库/交接产物） |
+| `umodel-rca` | **RootCause** | 需要在 UModel 对象图上做模型引导的根因分析时（替代纯文本/纯搜索定位） |
+
+> 这两个 Skill 依赖 `umctl` CLI 或 `umodel` MCP（复赛环境经 Higress 挂载到 `Worker.spec.mcpServers`）。官方技能全文在 `references/refs/unified-model/skills/`。
+
+---
+
 ## 四、落成 Worker CR 的 YAML 示例
 
 以 **Fixer 修复工程师** 为例（其他 Worker 同理，按上表填 `skills`）：
@@ -134,7 +147,8 @@ Manager 通过 `manage-skill` + `skills/scripts/` 集中编排：**定义 → �
 | Worker | spec.mcpServers | 用途 | Skill scripts（可执行） |
 |--------|----------------|------|------------------------|
 | Aggregator | `github` | 拉真实 Issue/需求 | — |
-| RootCause | `github` | 读真实仓库代码/搜索/blame | — |
+| RootCause | `github` + `umodel` | 读真实仓库代码/搜索/blame + 统一对象图根因分析 | — |
+| （数据层）全部 Worker | `umodel`（可选） | 按统一数据模型读共享状态/知识库实体 | — |
 | Fixer | `github` + `code-scan` | 分支/PR + 代码扫描 | `code-gen/scripts/check-patch-integrity.py` |
 | Tester | `test-platform` | 跑测试/覆盖率/静态分析 | `test-generation/scripts/verify_test_gate.py` |
 | Releaser | `ci`（可选） | 触发发布/回滚流水线 | — |

@@ -1,0 +1,23 @@
+kind: entity_set_link
+schema:
+  url: "umodel.aliyun.com"
+  version: "v0.1.0"
+metadata:
+  name: "dev.patch_verified_by_dev.test_report"
+  domain: dev
+  display_name:
+    en_us: "Patch Verified By Test Report"
+    zh_cn: "补丁被测试报告验证"
+  description:
+    en_us: "A code patch is verified by a test report (which aggregates its test cases)."
+    zh_cn: "一个代码补丁被测试报告验证（报告聚合其测试用例）。"
+spec:
+  src:
+    domain: dev
+    kind: entity_set
+    name: dev.patch
+  dest:
+    domain: dev
+    kind: entity_set
+    name: dev.test_report
+  entity_link_type: verified_by

@@ -1,0 +1,51 @@
+kind: entity_set
+schema:
+  url: "umodel.aliyun.com"
+  version: "v0.1.0"
+metadata:
+  name: "dev.defect"
+  domain: dev
+  display_name:
+    en_us: "Defect"
+    zh_cn: "缺陷"
+  description:
+    en_us: "A defect/issue aggregated from multi-source input by the Aggregator."
+    zh_cn: "由缺陷聚合员从多源输入聚合出的缺陷/问题。"
+spec:
+  fields:
+    - name: id
+      type: string
+      display_name: { en_us: "ID", zh_cn: "ID" }
+      description: { en_us: "Stable defect identifier.", zh_cn: "稳定缺陷标识。" }
+    - name: display_name
+      type: string
+      display_name: { en_us: "Name", zh_cn: "名称" }
+      description: { en_us: "Human-readable defect title.", zh_cn: "可读缺陷标题。" }
+    - name: severity
+      type: string
+      display_name: { en_us: "Severity", zh_cn: "严重等级" }
+      description: { en_us: "Defect severity (P0/P1/P2/P3).", zh_cn: "缺陷严重等级。" }
+    - name: status
+      type: string
+      display_name: { en_us: "Status", zh_cn: "状态" }
+      description: { en_us: "Current defect status (open/analyzing/fixing/testing/released/closed).", zh_cn: "缺陷当前状态。" }
+    - name: description
+      type: string
+      display_name: { en_us: "Description", zh_cn: "描述" }
+      description: { en_us: "Detailed defect description.", zh_cn: "缺陷详细描述。" }
+    - name: source
+      type: string
+      display_name: { en_us: "Source", zh_cn: "来源" }
+      description: { en_us: "Defect source (issue/log/report).", zh_cn: "缺陷来源。" }
+    - name: detected_at
+      type: string
+      display_name: { en_us: "Detected At", zh_cn: "发现时间" }
+      description: { en_us: "Detection timestamp.", zh_cn: "缺陷发现时间。" }
+  primary_key_fields:
+    - id
+  id_generator: "id"
+  name_fields:
+    - display_name
+  ordered_fields: ["id", "display_name", "severity", "status", "source", "detected_at"]
+  first_observed_time_field: "__first_observed_time__"
+  last_observed_time_field: "__last_observed_time__"

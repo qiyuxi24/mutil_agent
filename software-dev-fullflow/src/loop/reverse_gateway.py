@@ -1,4 +1,18 @@
-"""逆向 API 适配层 —— OpenAI 兼容网关（打通 AgentTeams 的关键桥接）。
+"""⚠️ ⚠️ ⚠️  [DEPRECATED / 已废弃，仅保留作参考]  ⚠️ ⚠️ ⚠️
+
+本模块：逆向 API 适配层 —— OpenAI 兼容网关（曾用于 CodeBuddy 逆向端点桥接）
+
+【废弃原因】
+  参赛主路径已切换为 AgentTeams 官方平台 + DeepSeek API Key 直连（OpenAI 兼容协议原生支持），
+  不再需要通过逆向 CodeBuddy 桌面版作为模型通道。本文件仅保留给后续若需接入非标准模型端点时参考。
+
+【当前状态】
+  - 不被 run.py、agentteams_loop.py、loop/__init__.py 等参赛主路径模块 import
+  - 仅 test_context_with_api.py / verify_reverse_api.py 等手工调试脚本会引用
+  - 不随参赛代码包的单元测试、集成测试、演示脚本加载执行
+
+================================================================================
+逆向 API 适配层 —— OpenAI 兼容网关（打通 AgentTeams 的关键桥接）。
 
 背景：
   AgentTeams 的 Higress 网关 / CoPaw 运行时都用 `/v1/chat/completions` 协议路径，

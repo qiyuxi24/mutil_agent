@@ -1,0 +1,43 @@
+kind: entity_set
+schema:
+  url: "umodel.aliyun.com"
+  version: "v0.1.0"
+metadata:
+  name: "dev.test_report"
+  domain: dev
+  display_name:
+    en_us: "Test Report"
+    zh_cn: "测试报告"
+  description:
+    en_us: "A deterministic test report produced by the Tester, serving as the quality gate."
+    zh_cn: "由测试验证员产出的确定性测试报告，作为质量门禁。"
+spec:
+  fields:
+    - name: id
+      type: string
+      display_name: { en_us: "ID", zh_cn: "ID" }
+      description: { en_us: "Stable report identifier.", zh_cn: "稳定报告标识。" }
+    - name: pass_count
+      type: integer
+      display_name: { en_us: "Pass Count", zh_cn: "通过数" }
+      description: { en_us: "Number of passing tests.", zh_cn: "通过的测试数。" }
+    - name: fail_count
+      type: integer
+      display_name: { en_us: "Fail Count", zh_cn: "失败数" }
+      description: { en_us: "Number of failing tests.", zh_cn: "失败的测试数。" }
+    - name: coverage
+      type: number
+      display_name: { en_us: "Coverage", zh_cn: "覆盖率" }
+      description: { en_us: "Code coverage percentage.", zh_cn: "代码覆盖率。" }
+    - name: verdict
+      type: string
+      display_name: { en_us: "Verdict", zh_cn: "结论" }
+      description: { en_us: "Deterministic verdict (PASS/FAIL).", zh_cn: "确定性结论（PASS/FAIL）。" }
+  primary_key_fields:
+    - id
+  id_generator: "id"
+  name_fields:
+    - id
+  ordered_fields: ["id", "pass_count", "fail_count", "coverage", "verdict"]
+  first_observed_time_field: "__first_observed_time__"
+  last_observed_time_field: "__last_observed_time__"

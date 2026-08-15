@@ -1,0 +1,43 @@
+kind: entity_set
+schema:
+  url: "umodel.aliyun.com"
+  version: "v0.1.0"
+metadata:
+  name: "dev.release"
+  domain: dev
+  display_name:
+    en_us: "Release"
+    zh_cn: "发布"
+  description:
+    en_us: "A release confirmation produced by the Releaser, with gate result and rollback readiness."
+    zh_cn: "由发布确认员产出的发布确认（含门禁结果与回滚就绪度）。"
+spec:
+  fields:
+    - name: id
+      type: string
+      display_name: { en_us: "ID", zh_cn: "ID" }
+      description: { en_us: "Stable release identifier.", zh_cn: "稳定发布标识。" }
+    - name: version
+      type: string
+      display_name: { en_us: "Version", zh_cn: "版本" }
+      description: { en_us: "Release version.", zh_cn: "发布版本。" }
+    - name: gate_result
+      type: string
+      display_name: { en_us: "Gate Result", zh_cn: "门禁结果" }
+      description: { en_us: "Release gate result (PASS/FAIL).", zh_cn: "发布门禁结果。" }
+    - name: rollback_ready
+      type: boolean
+      display_name: { en_us: "Rollback Ready", zh_cn: "回滚就绪" }
+      description: { en_us: "Whether rollback plan is ready.", zh_cn: "回滚预案是否就绪。" }
+    - name: approved_by
+      type: string
+      display_name: { en_us: "Approved By", zh_cn: "审批人" }
+      description: { en_us: "Human or manager approver.", zh_cn: "人工或经理审批人。" }
+  primary_key_fields:
+    - id
+  id_generator: "id"
+  name_fields:
+    - version
+  ordered_fields: ["id", "version", "gate_result", "rollback_ready", "approved_by"]
+  first_observed_time_field: "__first_observed_time__"
+  last_observed_time_field: "__last_observed_time__"

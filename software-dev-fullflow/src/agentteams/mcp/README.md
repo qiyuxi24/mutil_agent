@@ -13,9 +13,32 @@ src/agentteams/mcp/
   mcp-code-scan.yaml     示例模板：自建代码扫描 REST API → MCP 工具
   mcp-test-platform.yaml (可按需创建) 测试平台 REST API → MCP 工具
 scripts/
-  register-mcp.ps1       一键注册 MCP Server + 授权/通知 Worker
+  add-toolchains.ps1     预置常用工具链（GitHub + 网页搜索）
+  register-mcp.ps1       一键注册自定义 MCP Server + 授权/通知 Worker
 src/agentteams/workers.yaml  Worker 声明式 mcpServers 挂载
 ```
+
+---
+
+## 已预置工具链（`add-toolchains.ps1`）
+
+| Server | 类型 | 接入方式 | 挂到哪些 Worker |
+|--------|------|----------|-----------------|
+| `github` | GitHub 官方 MCP | `setup-mcp-server.sh`（官方内置模板 + PAT） | aggregator / rootcause / fixer |
+| `websearch` | 网页搜索 MCP | `setup-mcp-proxy.sh`（代理公开搜索服务） | aggregator / rootcause |
+
+**注册命令**：
+
+```powershell
+# 接 GitHub（需 PAT，填入你的 token）
+.\scripts\add-toolchains.ps1 -GithubToken "ghp_xxx"
+
+# 接 GitHub + 网页搜索
+.\scripts\add-toolchains.ps1 -GithubToken "ghp_xxx" -EnableSearch
+```
+
+> 注意：`websearch` 默认代理 `https://mcp.tavily.com/mcp`（StreamableHTTP）。若要免 key 的公共端点或换搜索服务，改 `add-toolchains.ps1` 里的 `$searchUrl`/`$searchHeader` 即可。
+> GitHub 的 PAT 由官方脚本注入网关（`AGENTTEAMS_GITHUB_TOKEN` 环境变量方式），Worker 看不到真实 token。
 
 ---
 
@@ -72,9 +95,12 @@ docker exec agentteams-controller agt apply -f /tmp/workers.yaml
 
 ## 注意事项
 
+- **必须在 controller 容器内执行**：Higress 控制台 8001 映射在 `agentteams-controller` 容器内（非 manager）。脚本已自动在 controller 容器内先登录再跑官方脚本。
+- **先登录 Higress**：脚本会自动调 `gateway_ensure_session()` 用 admin 凭据登录拿 cookie，无需手动。
 - **凭据只存网关**：YAML 里 `accessToken: ""`，真实 key 由脚本注入，**别写进 YAML 提交**。
 - **授权是 REPLACE**：官方脚本会带全 manager + 所有 worker，安全。
 - **先验证再通知**：脚本已内置等待 10s + mcporter list；若工具没出现，手动 `docker exec <worker> mcporter list <server> --schema` 排查。
 - **只通知相关 Worker**：默认全部分发；如只要部分，用 `-Workers fixer,tester`。
 - **stdio 不支持**：现有 MCP 只能用 `http`/`sse` 代理。
-- **云模式（SAE）**：`register-mcp.ps1` 不可用，改走阿里云 AI 网关控制台。
+- **云模式（SAE）**：`register-mcp.ps1` / `add-toolchains.ps1` 不可用，改走阿里云 AI 网关控制台。
+- **环境为 k8s 模式**：`AGENTTEAMS_RUNTIME=k8s`，与 docker 模式的控制台地址不同（已按 controller 内 8001 处理）。

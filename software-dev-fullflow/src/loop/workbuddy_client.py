@@ -1,4 +1,19 @@
-"""WorkBuddy (CodeBuddy) API 客户端 —— 逆向自腾讯 CodeBuddy 桌面版。
+"""⚠️ ⚠️ ⚠️  [DEPRECATED / 已废弃，仅保留作参考]  ⚠️ ⚠️ ⚠️
+
+本模块：WorkBuddy (CodeBuddy) API 客户端 —— 逆向自腾讯 CodeBuddy 桌面版
+
+【废弃原因】
+  参赛主路径已切换为 AgentTeams 官方平台 + DeepSeek API Key 直连（OpenAI 兼容协议原生支持），
+  不再需要通过逆向 CodeBuddy 桌面版作为模型通道。本文件仅保留给后续若需接入非标准模型端点时参考。
+
+【当前状态】
+  - 不被 run.py、agentteams_loop.py、loop/__init__.py 等参赛主路径模块 import
+  - 仅 reverse_gateway.py（同样 DEPRECATED）、test_context_with_api.py、verify_reverse_api.py
+    等手工调试脚本会引用
+  - 不随参赛代码包的单元测试、集成测试、演示脚本加载执行
+
+================================================================================
+WorkBuddy (CodeBuddy) API 客户端 —— 逆向自腾讯 CodeBuddy 桌面版。
 
 认证方式：
   1. 默认从本地 auth 文件读取凭据（需已安装 CodeBuddy 桌面版并登录）

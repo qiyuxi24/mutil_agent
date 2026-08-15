@@ -2,6 +2,10 @@
 # register-mcp.ps1
 # 一键把工具链注册到 Higress AI 网关并授权 Worker（复用官方脚本的胶水封装）。
 #
+# 关键：必须在 agentteams-controller 容器内执行（Higress 控制台 8001 映射在
+# controller 容器内），且先 source gateway-api.sh 的 gateway_ensure_session()
+# 登录拿 cookie（HIGRESS_COOKIE_FILE）再跑官方脚本。
+#
 # 三种模式：
 #   proxy  代理现有 MCP Server（GitHub/Jira/SonarQube 官方 MCP）→ 官方 setup-mcp-proxy.sh
 #   yaml   把自建 REST API 包装成 MCP 工具（用 mcp-<name>.yaml 模板）→ 官方 setup-mcp-server.sh
@@ -12,7 +16,7 @@
 #   .\scripts\register-mcp.ps1 -Name github -Mode proxy -Url https://mcp.example.com/mcp -Transport http -Header "Authorization: Bearer ghp_xxx"
 #   .\scripts\register-mcp.ps1 -Name github -Mode auth
 #
-# 依赖：docker 已运行，AgentTeams 已部署，官方脚本在 manager 容器内可用
+# 依赖：docker 已运行，AgentTeams 已部署（agentteams-controller 容器在跑）
 # ============================================================
 
 param(
@@ -36,18 +40,18 @@ if (-not (docker ps --format "{{.Names}}" | Where-Object { $_ -eq $ControllerCon
     exit 1
 }
 
-function Invoke-OfficialScript {
-    param([string]$ScriptName, [string]$ArgsLine)
-    # 官方脚本在 manager 容器内 /opt/agentteams/...，这里经 controller 转发；若无则直接提示
-    $probe = "sh -c 'command -v $ScriptName || ls /opt/agentteams/agent/skills/mcp-server-management/scripts/$ScriptName 2>/dev/null'"
-    $found = docker exec $ControllerContainer sh -c $probe 2>$null
-    if (-not $found) {
-        Write-Error "官方脚本 $ScriptName 在 $ControllerContainer 内不可用。请确认 AgentTeams 镜像完整。"
-        exit 1
-    }
-    Write-Host "==> 调官方脚本 $ScriptName $ArgsLine" -ForegroundColor Cyan
-    docker exec -i $ControllerContainer bash -c "$ScriptName $ArgsLine"
+# ---- 登录 Higress 拿 cookie（前置步骤）----
+$bootstrap = "source /opt/agentteams/scripts/lib/agentteams-env.sh; source /opt/agentteams/scripts/lib/gateway-api.sh; gateway_ensure_session && echo SESSION_OK"
+Write-Host "==> 登录 Higress 控制台拿 cookie ..." -ForegroundColor Cyan
+$sess = docker exec $ControllerContainer bash -c $bootstrap 2>&1
+if ($sess -notmatch "SESSION_OK") {
+    Write-Error "Higress 登录失败：$sess"
+    exit 1
 }
+Write-Host "    Higress 会话就绪。" -ForegroundColor Green
+
+# ---- 容器内跑官方脚本的公共引导 ----
+$env_init = "source /opt/agentteams/scripts/lib/agentteams-env.sh; source /opt/agentteams/scripts/lib/gateway-api.sh; gateway_ensure_session"
 
 # ---- 模式分发 ----
 switch ($Mode) {
@@ -55,7 +59,8 @@ switch ($Mode) {
         if (-not $Url) { Write-Error "proxy 模式需 -Url"; exit 1 }
         $h = ""
         if ($Header) { $h = "--header `"$Header`"" }
-        Invoke-OfficialScript "setup-mcp-proxy.sh" "$Name $Url $Transport $h"
+        Write-Host "==> 调官方 setup-mcp-proxy.sh $Name" -ForegroundColor Cyan
+        docker exec $ControllerContainer bash -c "$env_init; setup-mcp-proxy.sh $Name $Url $Transport $h" 2>&1
     }
     "yaml" {
         if (-not $Credential) { Write-Error "yaml 模式需 -Credential"; exit 1 }
@@ -65,10 +70,10 @@ switch ($Mode) {
         docker cp $YamlFile "${ControllerContainer}:${tmp}" | Out-Null
         $domain = ""
         if ($ApiDomain) { $domain = "--api-domain $ApiDomain" }
-        Invoke-OfficialScript "setup-mcp-server.sh" "$Name $Credential --yaml-file $tmp $domain"
+        Write-Host "==> 调官方 setup-mcp-server.sh $Name" -ForegroundColor Cyan
+        docker exec $ControllerContainer bash -c "$env_init; setup-mcp-server.sh $Name $Credential --yaml-file $tmp $domain" 2>&1
     }
     "auth" {
-        # 仅通知 worker 拉取配置（重新授权已在官方脚本内做，这里主要触发同步）
         Write-Host "==> auth 模式：触发 Worker 拉取 mcporter 配置" -ForegroundColor Cyan
     }
 }

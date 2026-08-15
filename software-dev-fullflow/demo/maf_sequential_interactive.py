@@ -1,3 +1,4 @@
+# ⚠️ 本脚本仅作「选型对比参考」，非参赛实现。参赛协同基点为阿里官方 AgentTeams。
 # 交互版：MAF Sequential 多 Agent 协同（writer → reviewer）
 # 运行后输入任意主题，观察两个 Agent 依次接力、共享上下文协作。
 # 输入 q / quit 退出。

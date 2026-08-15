@@ -1,13 +1,14 @@
 # ============================================================
 # MCP Server 模板：团队自建「代码扫描」REST API → MCP 工具
+# 后端真实实现：src/agentteams/toolchains/code_scan_service.py（阿里 AgentScope 实现）
 # 对齐官方 mcp-github.yaml 格式（Higress 网关用）
-# 用法：bash setup-mcp-server.sh code-scan "<YOUR_API_KEY>" --yaml-file mcp-code-scan.yaml --api-domain api.scan.example.com
+# 用法：bash setup-mcp-server.sh code-scan "<YOUR_API_KEY>" --yaml-file mcp-code-scan.yaml --api-domain host.docker.internal:9100
 # 说明：
 #   - server.config.accessToken 是统一凭据 key，脚本会替换为真实 key
 #   - tools[].requestTemplate 支持 Go template：{{.args.xxx}}、{{.config.xxx}}、{{.args.x | b64enc}} 等
 #   - 每个 tool 对应一个 REST 调用（method/url/body/headers）
 #   - 凭据通过 {{.config.accessToken}} 注入 header，Worker 看不到真实 key
-# 复制此文件为 mcp-<你的工具名>.yaml，改 tools 即可接入新工具链
+#   - 后端地址 host.docker.internal:9100 = 宿主机上运行的服务（Docker Desktop 专属桥接域名）
 # ============================================================
 
 server:
@@ -28,7 +29,7 @@ tools:
     required: false
     description: "要扫描的分支，默认 main"
   requestTemplate:
-    url: "https://api.scan.example.com/v1/scans?repo={{.args.repo}}&branch={{.args.branch | default \"main\"}}"
+    url: "http://host.docker.internal:9100/v1/scans"
     method: POST
     body: |
       {
@@ -49,7 +50,7 @@ tools:
     required: true
     description: "扫描任务 ID（来自 start_scan）"
   requestTemplate:
-    url: "https://api.scan.example.com/v1/scans/{{.args.scan_id}}"
+    url: "http://host.docker.internal:9100/v1/scans/{{.args.scan_id}}"
     method: GET
     headers:
     - key: Authorization
@@ -67,7 +68,7 @@ tools:
     required: false
     description: "按严重级别过滤：critical|high|medium|low"
   requestTemplate:
-    url: "https://api.scan.example.com/v1/issues?repo={{.args.repo}}&severity={{.args.severity}}"
+    url: "http://host.docker.internal:9100/v1/issues?repo={{.args.repo}}&severity={{.args.severity}}"
     method: GET
     headers:
     - key: Authorization
@@ -81,7 +82,7 @@ tools:
     required: true
     description: "问题 ID"
   requestTemplate:
-    url: "https://api.scan.example.com/v1/issues/{{.args.issue_id}}"
+    url: "http://host.docker.internal:9100/v1/issues/{{.args.issue_id}}"
     method: GET
     headers:
     - key: Authorization

@@ -1,0 +1,23 @@
+kind: entity_set_link
+schema:
+  url: "umodel.aliyun.com"
+  version: "v0.1.0"
+metadata:
+  name: "dev.defect_analyzed_by_dev.root_cause"
+  domain: dev
+  display_name:
+    en_us: "Defect Analyzed By Root Cause"
+    zh_cn: "缺陷被根因分析"
+  description:
+    en_us: "A defect is analyzed into a root-cause analysis."
+    zh_cn: "一个缺陷被分析出根因。"
+spec:
+  src:
+    domain: dev
+    kind: entity_set
+    name: dev.defect
+  dest:
+    domain: dev
+    kind: entity_set
+    name: dev.root_cause
+  entity_link_type: analyzed_by

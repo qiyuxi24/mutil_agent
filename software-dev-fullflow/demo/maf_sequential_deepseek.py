@@ -1,4 +1,5 @@
 # Copyright (c) Microsoft. All rights reserved.
+# ⚠️ 本脚本仅作「选型对比参考」，非参赛实现。参赛协同基点为阿里官方 AgentTeams。
 # 修改自 MAF 官方案例 samples/03-workflows/orchestrations/sequential_agents.py
 # 改造点：
 #   - 将 FoundryChatClient（需微软账号）替换为 OpenAIChatCompletionClient（OpenAI 兼容协议）
