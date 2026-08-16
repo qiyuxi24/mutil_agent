@@ -1,16 +1,18 @@
-"""Agent 成员评价器：合格度 + 贡献度 + 治理评级。
+"""Agent 成员评价器：合格度 + 贡献度 + 成长分 + 治理评级。
 
-对应 design/AGENT-EVALUATION.md 的三层评价模型：
+对应 design/AGENT-EVALUATION.md 的三层评价模型 + KPI-BENCHMARK.md 的 BSC 学习成长维度：
   Layer 1 合格度 Qualification —— 确定性闸门 KPI（客观，零额外 LLM 成本）
   Layer 2 贡献度 Contribution —— 采纳贡献分（轻量）/ 替换基线法（精确，可选）
+  Layer 2.5 成长分 Growth    —— 知识跨任务复用率（BSC 学习与成长，对齐 KPI-BENCHMARK §3.4）
   Layer 3 治理 Governance     —— 综合分 → 留任/培训/降级/裁员
 
-纯 Python 实现，只依赖 state.py，不依赖 agent_framework，可独立单测：
+纯 Python 实现，只依赖 state.py + knowledge_tracker.py，不依赖 agent_framework，可独立单测：
   cd software-dev-fullflow/src && python -c "from loop.evaluation import score_team; print(score_team)"
 
 信号来源说明：
   - reject_count / elapsed 等"成员级"信号需 Manager 在 run() 里埋点采集后传入；
-  - 若不传，则用默认值（0 打回 / 期望时延），评价退化为"只看里程碑推进"。
+  - growth_scores 由 knowledge_tracker.UsageTracker.get_agent_growth_score() 提供；
+  - 若不传，则用默认值（0 打回 / 期望时延 / 0 成长分），评价退化为"只看里程碑推进"。
 """
 
 from __future__ import annotations
@@ -58,9 +60,11 @@ QUAL_WEIGHTS: dict[str, float] = {
     "auditability": 0.10,
 }
 
-# 综合分 = 0.6 * 合格分 + 0.4 * 贡献分
-OVERALL_QUAL_WEIGHT = 0.6
-OVERALL_CONTRIB_WEIGHT = 0.4
+# 综合分 = 0.5 * 合格分 + 0.35 * 贡献分 + 0.15 * 成长分（对齐 KPI-BENCHMARK §3.4）
+# 当 growth_scores 未传入（默认 0）时，权重自动归一化回 0.6/0.4
+OVERALL_QUAL_WEIGHT = 0.50
+OVERALL_CONTRIB_WEIGHT = 0.35
+OVERALL_GROWTH_WEIGHT = 0.15
 
 
 @dataclass
@@ -70,6 +74,7 @@ class AgentScorecard:
     role: str
     qual_score: float = 0.0       # 合格分 0-100
     contrib_score: float = 0.0    # 贡献分 0-100
+    growth_score: float = 0.0     # 成长分（知识跨任务复用次数，对齐 KPI-BENCHMARK §3.4）
     overall: float = 0.0          # 综合分 0-100
     rating: str = "Unqualified"   # Qualified / Underperforming / Unqualified
     detail: dict = field(default_factory=dict)
@@ -79,6 +84,7 @@ class AgentScorecard:
             "role": self.role,
             "qual_score": round(self.qual_score, 1),
             "contrib_score": round(self.contrib_score, 1),
+            "growth_score": round(self.growth_score, 1),
             "overall": round(self.overall, 1),
             "rating": self.rating,
             "detail": self.detail,
@@ -231,12 +237,12 @@ class TeamEvaluation:
 
     def report(self) -> str:
         lines = [f"=== 团队评价报告 · 任务 {self.task_id} ==="]
-        lines.append(f"{'角色':<14}{'合格分':>8}{'贡献分':>8}{'综合分':>8}  {'评级':<16}{'治理动作'}")
+        lines.append(f"{'角色':<14}{'合格分':>8}{'贡献分':>8}{'成长分':>8}{'综合分':>8}  {'评级':<16}{'治理动作'}")
         for role, card in self.scorecards.items():
             action = governance_action(role, card.rating)
             lines.append(
                 f"{role:<14}{card.qual_score:>8}{card.contrib_score:>8}"
-                f"{card.overall:>8}  {card.rating:<16}{action}"
+                f"{card.growth_score:>8}{card.overall:>8}  {card.rating:<16}{action}"
             )
         return "\n".join(lines)
 
@@ -279,6 +285,7 @@ def score_team(
     durations: Optional[dict[str, float]] = None,
     adoptions: Optional[dict[str, float]] = None,
     protocol_oks: Optional[dict[str, bool]] = None,
+    growth_scores: Optional[dict[str, float]] = None,
 ) -> TeamEvaluation:
     """入口：由一次任务的 TaskState 产出团队评价报告。
 
@@ -288,11 +295,14 @@ def score_team(
         durations:     成员 → 总耗时秒（Manager 埋点采集；缺省按期望时延）。
         adoptions:     成员 → 下游采纳度 0-1（缺省按 1.0 全采纳）。
         protocol_oks:  成员 → 协议合规（里程碑词 + 交接 @mention；缺省按 True）。
+        growth_scores: 成员 → 成长分（knowledge_tracker 采集；缺省按 0 处理）。
+                       成长分 = 该成员沉淀的知识被跨任务 RAG 检索命中的总次数。
     """
     reject_counts = reject_counts or {}
     durations = durations or {}
     adoptions = adoptions or {}
     protocol_oks = protocol_oks or {}
+    growth_scores = growth_scores or {}
 
     # 从 milestones 提取"谁负责了哪个里程碑"（by 字段，state.py 已记录）
     participants: set[str] = set()
@@ -322,7 +332,7 @@ def score_team(
             role,
             reject_count=reject,
             complete=has_artifact,
-            protocol_ok=protocol_oks.get(role, True),  # 协议合规：里程碑词 + 交接（Manager 埋点采集）
+            protocol_ok=protocol_oks.get(role, True),
             elapsed=elapsed,
             auditable=has_artifact,
         )
@@ -331,17 +341,33 @@ def score_team(
             adoption=adoptions.get(role, 1.0),
             reject_count=reject,
         )
-        overall = round(OVERALL_QUAL_WEIGHT * qual + OVERALL_CONTRIB_WEIGHT * contrib, 1)
+        growth = growth_scores.get(role, 0.0)
+
+        # 综合分 = 0.50 * 合格分 + 0.35 * 贡献分 + 0.15 * 成长分
+        # 当 growth 为 0 时（未传入），权重自动归一化：合格分和贡献分按比例重新分配 15% 的权重
+        if growth > 0:
+            overall = round(
+                OVERALL_QUAL_WEIGHT * qual
+                + OVERALL_CONTRIB_WEIGHT * contrib
+                + OVERALL_GROWTH_WEIGHT * growth,
+                1,
+            )
+        else:
+            # 无成长分时，保持与原公式兼容：0.6 * qual + 0.4 * contrib
+            overall = round(0.6 * qual + 0.4 * contrib, 1)
+
         cards[role] = AgentScorecard(
             role=role,
             qual_score=qual,
             contrib_score=contrib,
+            growth_score=growth,
             overall=overall,
             rating=rating_of(overall),
             detail={
                 "reject_count": reject,
                 "elapsed": elapsed,
                 "adoption": adoptions.get(role, 1.0),
+                "growth_score": growth,
                 "protocol_ok": protocol_oks.get(role, True),
                 "milestone_weight": MILESTONE_WEIGHT.get(role, 0.5),
             },
@@ -363,6 +389,7 @@ if __name__ == "__main__":
     }
     ts.artifacts = {"ROOT_CAUSE": "rootcause.md", "FIX_APPLY": "fixer.md"}
 
+    # 不带成长分（兼容旧行为）
     report = score_team(
         ts,
         reject_counts={"fixer": 1},          # fixer 被打回一次
@@ -370,3 +397,23 @@ if __name__ == "__main__":
     )
     print(report.report())
     print("\nJSON:", report.to_dict())
+
+    print("\n" + "=" * 60)
+
+    # 带成长分（新行为：retrospector 沉淀的知识已被跨任务检索 3 次）
+    ts2 = TaskState(task_id="demo-002", spec="演示：带成长分")
+    ts2.milestones = {
+        "ROOT_CAUSE_FOUND": {"verdict": "PASS", "detail": "ok", "by": "rootcause"},
+        "FIX_APPLIED": {"verdict": "PASS", "detail": "ok", "by": "fixer"},
+        "RETROSPECT_DONE": {"verdict": "PASS", "detail": "ok", "by": "retrospector"},
+    }
+    ts2.artifacts = {"ROOT_CAUSE": "rootcause.md", "FIX_APPLY": "fixer.md", "RETROSPECT": "retrospect.json"}
+
+    report2 = score_team(
+        ts2,
+        reject_counts={"fixer": 1},
+        durations={"rootcause": 100.0, "fixer": 400.0, "retrospector": 50.0},
+        growth_scores={"retrospector": 3.0},  # retrospector 的知识被跨任务复用了 3 次
+    )
+    print(report2.report())
+    print("\nJSON:", report2.to_dict())

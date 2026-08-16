@@ -300,12 +300,16 @@ class WebDashboard:
         ctx: ContextManager,
         port: int = 8080,
         host: str = "127.0.0.1",
+        approval: Any = None,
     ):
         self.event_bus = event_bus
         self.state = state
         self.ctx = ctx
         self.port = port
         self.host = host
+        # 审批管理器（可选）：接入后 /api/approve 走留痕闭环 + TTL 兜底；
+        #   不传时降级为仅发事件（保持旧行为兼容）
+        self.approval = approval
 
         # SSE 客户端队列
         self._queues: list[asyncio.Queue] = []
@@ -332,6 +336,7 @@ class WebDashboard:
             Route("/events", self._events_sse, methods=["GET"]),
             Route("/api/status", self._status_api, methods=["GET"]),
             Route("/api/approve", self._approve_api, methods=["POST"]),
+            Route("/api/approvals", self._approvals_api, methods=["GET"]),
         ])
 
         config = uvicorn.Config(
@@ -408,24 +413,65 @@ class WebDashboard:
         })
 
     async def _approve_api(self, request):
-        """人工审批 API。"""
+        """人工审批 API。
+
+        走 ApprovalManager 时：
+          - 支持按 approval_id 精确审批（POST approval_id=<id>&approved=true/false）；
+          - 未带 approval_id 则审批该 task_id 下最新一条待审请求（兼容旧前端按钮）。
+          - 每次决策写审计（human_intervention + decision），实现留痕闭环。
+        未接入 ApprovalManager（approval=None）时降级为仅发事件（旧行为）。
+        """
         body = await request.body()
         body_str = body.decode("utf-8", errors="replace")
         approved = "approved=true" in body_str
+        rejected = "rejected=true" in body_str or not approved
+        approval_id = ""
+        # 解析 form 字段
+        for kv in body_str.split("&"):
+            if "=" in kv:
+                k, v = kv.split("=", 1)
+                if k == "approval_id":
+                    approval_id = v
 
-        # 发射审批事件
-        if approved:
-            await self.event_bus.milestone_reached(
-                "human", self.state.task_id, "RELEASE_APPROVED",
-                data={"approved": True},
-            )
-        else:
-            await self.event_bus.milestone_failed(
-                "human", self.state.task_id, "RELEASE_REJECTED",
-                data={"rejected": True},
-            )
+        # 无审批管理器：降级为仅发事件（保持旧行为）
+        if self.approval is None:
+            if approved:
+                await self.event_bus.milestone_reached(
+                    "human", self.state.task_id, "RELEASE_APPROVED",
+                    data={"approved": True},
+                )
+            else:
+                await self.event_bus.milestone_failed(
+                    "human", self.state.task_id, "RELEASE_REJECTED",
+                    data={"rejected": True},
+                )
+            return JSONResponse({"status": "ok", "approved": approved})
 
-        return JSONResponse({"status": "ok", "approved": approved})
+        # 有审批管理器：定位目标审批请求（默认该 task 下最新一条 pending）
+        if not approval_id:
+            pending = self.approval.pending(self.state.task_id)
+            if not pending:
+                return JSONResponse({"status": "error", "error": "无待审批请求"})
+            approval_id = pending[-1].approval_id
+
+        req = await self.approval.decide(
+            approval_id, approved=approved, reviewer="human-web",
+        )
+        if req is None:
+            return JSONResponse({"status": "error", "error": f"审批 {approval_id} 不存在或已处置"})
+        return JSONResponse({
+            "status": "ok", "approved": approved,
+            "approval_id": approval_id, "result": req.status.value,
+        })
+
+    async def _approvals_api(self, request):
+        """查询待审批请求列表（供前端轮询展示 TTL 倒计时）。"""
+        if self.approval is None:
+            return JSONResponse({"approvals": [], "ttl_secs": 0})
+        snap = self.approval.snapshot()
+        return JSONResponse({"approvals": snap["pending"],
+                             "by_status": snap["by_status"],
+                             "ttl_secs": self.approval.ttl_secs})
 
 
 # ========================================================================== #

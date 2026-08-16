@@ -45,6 +45,7 @@ from loop.evaluation import score_team
 from loop.agentteams_client import AgentTeamsClient
 from loop.agent_bus import AgentBus, EventBus
 from loop.audit_logger import AuditLogger
+from loop.approval import ApprovalManager
 
 
 # ========================================================================== #
@@ -120,6 +121,15 @@ class AgentTeamsLoop:
         # 结构化审计日志（可观测 / 可审计，委托模式也需要）
         self.audit = AuditLogger(self.workdir / "shared" / "audit")
 
+        # 审批管理器（人工审批留痕闭环 + TTL 超时兜底）
+        #   TTL 默认 60s，可用环境变量 APPROVAL_TTL_SECS 覆盖（<=0 表示不超时仅人工审批）
+        approval_ttl = int(os.environ.get("APPROVAL_TTL_SECS", ApprovalManager.DEFAULT_TTL_SECS))
+        self.approval = ApprovalManager(
+            event_bus=self.event_bus,
+            audit=self.audit,
+            ttl_secs=approval_ttl,
+        )
+
     def _ensure_local_contexts(self) -> None:
         """GAP-13: 懒加载本地上下文工程组件（只在 mock 模式下调用）。"""
         if self.ctx is not None:
@@ -149,6 +159,8 @@ class AgentTeamsLoop:
         print(f"\n=== AgentTeams 客户端启动 · 任务 {self.task_id} ===")
         print(f"初始状态: {self.state.state.value}")
 
+        # 启动审批管理器的后台超时扫描（TTL 超时自动驳回，避免演示卡死在审批）
+        await self.approval.start()
         try:
             if self.mock:
                 result = await self._run_mock()
@@ -159,6 +171,8 @@ class AgentTeamsLoop:
             self.state.save(self.tasks_dir / "state.json")
             return result
         finally:
+            # 停止审批后台扫描
+            await self.approval.stop()
             # 关闭审计日志文件句柄（避免 Windows 下临时目录清理失败）
             self.audit.close()
 
@@ -450,6 +464,30 @@ class AgentTeamsLoop:
 
             self.audit.log_milestone(self.task_id, executor, expected_ms,
                                      state=stage.value, result="PASS")
+
+            # 发布审批：登记一条人工审批请求，演示审批留痕闭环 + TTL 超时兜底。
+            #   默认 auto-approve（mock 秒级闭环不卡在审批）；设 APPROVAL_WAIT=1 则等人工/TTL。
+            if stage == State.RELEASE_APPROVE:
+                req = await self.approval.request(
+                    self.task_id,
+                    reason="发布门禁：灰度放量需人工确认",
+                    requester="releaser",
+                    kind="release",
+                )
+                if os.environ.get("APPROVAL_WAIT") == "1":
+                    # 等待人工审批或超时（后台 check_timeouts 会兜底）
+                    deadline = time.time() + (self.approval.ttl_secs or 5)
+                    while time.time() < deadline:
+                        if req.status.name != "PENDING":
+                            break
+                        await asyncio.sleep(0.2)
+                    if req.status.name == "PENDING":
+                        await self.approval.check_timeouts()
+                else:
+                    # 默认自动批准（演示审批闭环，不阻塞闭环）
+                    await self.approval.decide(
+                        req.approval_id, approved=True, reviewer="manager-auto",
+                    )
 
             if stage == State.RETROSPECT:
                 break

@@ -280,7 +280,7 @@ async def main() -> None:
         dash = create_dashboard(loop.event_bus, loop.state, loop.ctx)
         await dash.start()
     if use_web:
-        web = WebDashboard(loop.event_bus, loop.state, loop.ctx)
+        web = WebDashboard(loop.event_bus, loop.state, loop.ctx, approval=loop.approval)
         await web.start()
 
     # ── 交互式 Shell ──

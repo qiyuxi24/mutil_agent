@@ -12,9 +12,6 @@
     event_bus.py          — 事件驱动（EventBus，替代同步轮询）
     audit_logger.py       — 结构化审计日志
 
-框架无关数据结构：
-    agent_interface.py    — WorkerContext / WorkerResult / ResultStatus / AgentInterface
-    iterative_worker.py   — WorkStep / WorkPlan
 """
 
 # 核心模块（框架无关，始终可用）
@@ -26,12 +23,6 @@ from loop.agentteams_loop import AgentTeamsLoop, run_pdca_task, check_platform_r
 
 # 上下文工程（框架无关）
 from loop.context import DynamicBudgetAllocator, StageBudget, SemanticMemorySearch
-
-# 框架无关数据结构（保留作为 I/O 契约参考）
-from loop.agent_interface import (
-    WorkerContext, WorkerResult, ResultStatus, AgentInterface,
-)
-from loop.iterative_worker import WorkStep, WorkPlan
 
 # 消息总线 + 事件驱动
 from loop.agent_bus import (
@@ -48,9 +39,6 @@ __all__ = [
     "AgentTeamsLoop", "run_pdca_task", "check_platform_ready",
     # 上下文工程
     "DynamicBudgetAllocator", "StageBudget", "SemanticMemorySearch",
-    # 框架无关数据结构
-    "WorkerContext", "WorkerResult", "ResultStatus", "AgentInterface",
-    "WorkStep", "WorkPlan",
     # 消息总线 + 事件驱动
     "AgentBus", "EventBus", "Event", "EventType", "MessageType", "AgentMessage",
     # 审计

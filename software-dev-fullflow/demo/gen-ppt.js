@@ -130,7 +130,7 @@ pres.title = "GOAI 赛道三 · 软件研发全流程协同多Agent系统";
   const subs = [
     ["自动化质量门禁", "测试验证员用确定性工具当裁判，不合格代码不进发布", C.mint],
     ["最小影响可回滚", "灰度 + 金丝雀 + Saga 补偿回滚，发布全程留痕", C.teal],
-    ["组织记忆复用", "复盘沉淀到 RAG 知识库，越跑越懂项目", C.deep],
+    ["组织记忆复用", "复盘沉淀到 RAG 知识库，知识复用统计反哺成长，越跑越懂项目", C.deep],
   ];
   subs.forEach((t, i) => {
     const x = 0.55 + i * 3.03;
@@ -333,18 +333,24 @@ pres.title = "GOAI 赛道三 · 软件研发全流程协同多Agent系统";
   const evals = [
     ["合格度", "客观 KPI 达标判定，确定性优先"],
     ["贡献度", "反事实归因（借鉴 C3 / Shapley），不删 Agent"],
-    ["治理", "留任 / 培训 / 降级 / 裁员的客观依据"],
+    ["成长分", "沉淀知识被跨任务复用的次数（学习与成长）"],
   ];
   evals.forEach((e, i) => {
     s.addShape(pres.shapes.OVAL, { x: 6.25, y: 2.1 + i * 0.55, w: 0.4, h: 0.4, fill: { color: [C.mint, C.teal, C.deep][i] } });
     s.addText(e[0], { x: 6.75, y: 2.08 + i * 0.55, w: 2.5, h: 0.28, fontSize: 11, bold: true, color: C.navy });
     s.addText(e[1], { x: 6.75, y: 2.34 + i * 0.55, w: 2.55, h: 0.26, fontSize: 8.5, color: C.gray });
   });
+  s.addText("综合分 = 0.5 合格 + 0.35 贡献 + 0.15 成长", {
+    x: 6.25, y: 3.78, w: 3.05, h: 0.3, fontSize: 9.5, bold: true, color: C.teal
+  });
+  s.addText("治理：留任 / 培训 / 降级 / 裁员 的客观依据", {
+    x: 6.25, y: 4.08, w: 3.05, h: 0.28, fontSize: 8.5, color: C.gray
+  });
 
   s.addText("研究依据：AgentInit / AgentVerse / MetaGPT / ChatDev / CoMAS 等（已核实的 arXiv 引用）", {
     x: 0.55, y: 4.7, w: 9, h: 0.35, fontSize: 11, italic: true, color: C.teal
   });
-  s.addText("确定性状态机 · 确定性验证闸门 · 上下文工程 · 成员评价 —— 官方缺失的四大差异价值，已嵌入官方框架", {
+  s.addText("确定性状态机 · 确定性验证闸门 · 上下文工程 · 成员评价（含知识复用成长分）—— 官方缺失的差异价值，已嵌入官方框架", {
     x: 0.55, y: 5.05, w: 9, h: 0.35, fontSize: 11, italic: true, color: C.teal
   });
 })();
@@ -411,7 +417,7 @@ pres.title = "GOAI 赛道三 · 软件研发全流程协同多Agent系统";
     ["L3 · 平台集成", "AgentTeams（agt CLI + Matrix 房间协议）· Human 介入审批 · 沙箱", C.navy, C.mint],
     ["L2 · 标准接口层", "AgentTeamsLoop 调度引擎 · AgentInterface · AgentBus/EventBus · 6 Worker", C.deep, C.white],
     ["L1 · 调度核心升级", "IterativeWorker 迭代 · 动态预算分配 · 语义记忆检索 · 异步并行派单", C.teal, C.white],
-    ["共享协议层", "state.py 确定性状态机 · team.py 角色 · evaluation.py 评价 · context.py 上下文", C.off, C.navy],
+    ["共享协议层", "state.py 确定性状态机 · evaluation.py 评价 · knowledge_tracker.py 知识复用统计 · context.py 上下文", C.off, C.navy],
   ];
   rows.forEach((r, i) => {
     const y = 1.45 + i * 0.95;

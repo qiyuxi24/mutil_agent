@@ -8,6 +8,10 @@
 # ===== 第三方参考仓库（浅克隆，仅参考，不参与参赛）=====
 mattpocock-skills/
 software-dev-fullflow/references/
+eval_reference/
+
+# ===== 本地提交包（参赛打包产物，不入版本库）=====
+提交包/
 
 # ===== 根目录 / 项目运行日志 =====
 *.log
