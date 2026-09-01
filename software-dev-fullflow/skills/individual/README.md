@@ -42,7 +42,7 @@
 │    issue-parsing / root-cause-analysis / code-gen / …         │
 │    → 我这个角色「干什么」（本职能力）                           │
 ├──────────────────────────────────────────────────────────────┤
-│ ③ 基座工具  skills/ L1 基座层（5 个，跨角色）                  │
+│ ③ 基座工具  skills/ L1 基座层（6 个，跨角色）                  │
 │    git-operations / code-search / repo-context /              │
 │    knowledge-rag / evidence-log                               │
 │    → 「用什么工具」                                           │

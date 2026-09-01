@@ -23,11 +23,16 @@ from __future__ import annotations
 import asyncio
 import os
 
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, Response
+
 from .core import (
     TEST_STORE,
     _next_id,
     evaluate_test_gate,
 )
+from .mcp_adapter import McpAdapter
 
 # ---- AgentScope 官方组件：用 FunctionTool 定义工具 ----
 from agentscope.tool import FunctionTool, Toolkit
@@ -135,9 +140,6 @@ def _register_tools_sync(tk: Toolkit) -> None:
 
 def build_app():
     """构建 FastAPI 应用。"""
-    from fastapi import FastAPI, HTTPException
-    from fastapi.middleware.cors import CORSMiddleware
-
     app = FastAPI(title="AgentTeams Test Platform Toolchain", version="1.0.0")
     app.add_middleware(
         CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
@@ -146,6 +148,51 @@ def build_app():
     tk = build_agentscope_toolkit()
     _register_tools_sync(tk)
     app.state.toolkit = tk
+
+    # ---- MCP 适配层 ----
+    mcp = McpAdapter(server_name="test-platform", server_version="1.0.0")
+    mcp.register_tool("run_tests", "在指定仓库分支上执行测试套件，返回测试执行任务 ID",
+                      {"repo": {"type": "string", "description": "仓库名"},
+                       "branch": {"type": "string", "description": "分支，默认 main"},
+                       "suite": {"type": "string", "description": "测试套件过滤"}},
+                      ["repo"], tool_run_tests)
+    mcp.register_tool("get_test_result", "查询指定测试执行任务的结果",
+                      {"run_id": {"type": "string", "description": "测试执行任务 ID"}},
+                      ["run_id"], tool_get_test_result)
+    mcp.register_tool("get_coverage", "查询指定仓库分支的代码覆盖率报告",
+                      {"repo": {"type": "string", "description": "仓库名"},
+                       "branch": {"type": "string", "description": "分支，默认 main"}},
+                      ["repo"], tool_get_coverage)
+    mcp.register_tool("run_static_analysis", "对指定仓库分支执行静态分析",
+                      {"repo": {"type": "string", "description": "仓库名"},
+                       "branch": {"type": "string", "description": "分支，默认 main"}},
+                      ["repo"], tool_run_static_analysis)
+
+    _sessions: dict[str, str] = {}
+
+    @app.get("/mcp")
+    def mcp_get():
+        """MCP Streamable HTTP: 会话初始化。"""
+        session_id = mcp.create_session_id()
+        _sessions[session_id] = "active"
+        return JSONResponse(
+            content={"status": "ok", "server": "test-platform"},
+            headers={"Mcp-Session-Id": session_id},
+        )
+
+    @app.post("/mcp")
+    async def mcp_post(request: Request):
+        """MCP Streamable HTTP: JSON-RPC 消息处理。"""
+        body = await request.json()
+        result = mcp.handle_jsonrpc(body)
+        if result is None:
+            return Response(status_code=202)
+        return result
+
+    @app.delete("/mcp")
+    def mcp_delete():
+        """MCP Streamable HTTP: 会话终止。"""
+        return Response(status_code=204)
 
     @app.get("/health")
     def health():

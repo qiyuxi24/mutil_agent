@@ -19,8 +19,13 @@ import sys
 from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parent.parent
-WORKERS_YAML = PROJECT / "src" / "agentteams" / "workers.yaml"
+AGENTTEAMS_DIR = PROJECT / "src" / "agentteams"
+WORKERS_YAML = AGENTTEAMS_DIR / "workers.yaml"
 SKILLS_DIR = PROJECT / "skills"
+
+# 额外扫描的 Worker CR 文件（2026-08-16 重构后：一套班子全部在 workers.yaml，无独立 CR）
+# 原 hr/architect/backend/deployer 独立 CR 已删除并入一套班子（见 design/TEAM-REFACTOR-SINGLE-BANCHANG.md）
+EXTRA_WORKER_YAMLS = []
 
 try:
     import yaml
@@ -56,11 +61,9 @@ def _regex_skills(text: str) -> list:
     return skills
 
 
-def collect_referenced_skills() -> tuple[dict, list]:
-    """返回 ({worker: [skills]}, 去重后的全部 skill 名)。"""
-    if not WORKERS_YAML.exists():
-        raise FileNotFoundError(f"找不到 {WORKERS_YAML}")
-    text = WORKERS_YAML.read_text(encoding="utf-8")
+def _scan_yaml_docs(yaml_path: Path) -> tuple[dict, list]:
+    """扫描单个 YAML 文件里的所有 Worker CR，返回 (per_worker, all_skills)。"""
+    text = yaml_path.read_text(encoding="utf-8")
     per_worker: dict = {}
     all_skills: list = []
     if yaml is not None:
@@ -75,19 +78,41 @@ def collect_referenced_skills() -> tuple[dict, list]:
                     per_worker[name] = list(skills)
                     all_skills.extend(skills)
         except Exception:  # noqa: BLE001
-            # YAML 解析失败时退化为正则
             per_worker, all_skills = {}, []
     if not per_worker:
-        # 正则兜底：按 "---" 分割每个文档，找 name + skills
         for doc_text in re.split(r"^---\s*$", text, flags=re.M):
-            name_m = re.search(r"^metadata:\s*$.*?^  name:\s*([\w-]+)", doc_text, re.S)
+            # metadata/name 允许任意前导缩进（workers.yaml 的 CR 是缩进格式）
+            # 需同时 re.M 让 ^ 匹配行首（metadata 顶格、name 缩进 2 空格）
+            name_m = re.search(
+                r"^(\s*)metadata:\s*$.*?^\1\s+name:\s*([\w-]+)", doc_text, re.S | re.M
+            )
             if not name_m:
                 continue
-            name = name_m.group(1)
+            name = name_m.group(2)
             skills = _regex_skills(doc_text)
             if skills:
                 per_worker[name] = skills
                 all_skills.extend(skills)
+    return per_worker, all_skills
+
+
+def collect_referenced_skills() -> tuple[dict, list]:
+    """返回 ({worker: [skills]}, 去重后的全部 skill 名)。
+
+    扫描 `workers.yaml`（修复模式 6 角色）+ `EXTRA_WORKER_YAMLS`（HR + 搭建角色），
+    覆盖全团队生态的 skill 引用。文件缺失时静默跳过。
+    """
+    if not WORKERS_YAML.exists():
+        raise FileNotFoundError(f"找不到 {WORKERS_YAML}")
+    per_worker: dict = {}
+    all_skills: list = []
+    targets = [WORKERS_YAML] + [AGENTTEAMS_DIR / n for n in EXTRA_WORKER_YAMLS]
+    for yp in targets:
+        if not yp.exists():
+            continue
+        pw, sk = _scan_yaml_docs(yp)
+        per_worker.update(pw)
+        all_skills.extend(sk)
     # 去重保持顺序
     seen = set()
     uniq = [s for s in all_skills if not (s in seen or seen.add(s))]
@@ -128,6 +153,12 @@ def shell_content(name: str, assign_when: str) -> str:
         "repo-context": "仓库结构感知：模块划分、依赖图、变更范围、构建入口",
         "knowledge-rag": "知识库检索/写入：查历史经验教训、已修复缺陷、失败模式",
         "evidence-log": "执行证据沉淀：把 Trace/Log/报告写入审计日志，可追溯",
+        "team-management": "团队管理：组建/调整 Team，管理成员与群组",
+        "project-management": "项目管理：任务拆解、进度跟踪、里程碑管理",
+        "dynamic-hiring": "动态招人/裁员：按项目需求组建/回收 Agent 团队",
+        "site-design": "站点架构设计：产出 design.md（页面+接口+数据模型）",
+        "backend-impl": "后端实现：POST 接口 + 数据存储 + 启动脚本",
+        "deploy-runtime": "部署运行：起服务到可访问地址 + 健康检查 + 回滚",
     }.get(name, "见 ASSIGNMENT-MATRIX.md 与该 Skill 分配")
     if assign_when == "见 ASSIGNMENT-MATRIX.md":
         assign_when = "需要" + desc.split("：", 1)[-1] if "：" in desc else "对应职能 Worker 执行时分配"

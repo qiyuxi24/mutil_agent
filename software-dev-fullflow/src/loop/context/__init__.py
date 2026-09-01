@@ -35,6 +35,7 @@ from __future__ import annotations
 from .agent_memory import (
     AgentMemory,
     AgentMemoryEntry,
+    AgentMemoryRegistry,
 )
 from .budget import (
     ContextBudget,
@@ -43,6 +44,7 @@ from .budget import (
     StageBudget,
 )
 from .estimator import TokenEstimator
+from .events import ContextEvent
 from .manager import ContextManager
 from .memory_tiers import (
     LongTermMemory,
@@ -68,12 +70,14 @@ from .utils import (
 __all__ = [
     # estimator
     "TokenEstimator",
+    # events
+    "ContextEvent",
     # budget
     "ContextSlice", "ContextBudget", "StageBudget", "DynamicBudgetAllocator",
     # memory
     "MemoryTier", "MemoryEntry",
     "ShortTermMemory", "MediumTermMemory", "LongTermMemory",
-    "AgentMemoryEntry", "AgentMemory", "SemanticMemorySearch",
+    "AgentMemoryEntry", "AgentMemory", "AgentMemoryRegistry", "SemanticMemorySearch",
     # protocol
     "IterationPhase", "IterationCriteria", "IterationProtocol",
     # metrics

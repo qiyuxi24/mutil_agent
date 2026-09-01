@@ -46,7 +46,10 @@ class State(str, Enum):
     RETROSPECT = "RETROSPECT"           # 复盘沉淀 → RETROSPECT_DONE
 
 
-# 状态 → 默认执行者（角色解耦：可动态替换）
+# 状态 → 默认执行者（角色解耦：Leader 可在任务级覆盖，见 TaskState.executor_for）
+# 「一套完整班子」默认执行者映射（2026-08-16 重构）。
+# 同一阶段可能有多个员工参与（如 FIX_APPLY 可由 frontend/backend/fixer 任一人），
+# 这里给「首选默认」，Leader 可每阶段动态挑人覆盖。
 STATE_EXECUTOR: dict[State, str] = {
     State.SPEC_INPUT: "aggregator",
     State.SPEC_DECOMPOSE: "aggregator",
@@ -57,6 +60,14 @@ STATE_EXECUTOR: dict[State, str] = {
     State.RELEASE_APPROVE: "releaser",
     State.RETROSPECT: "retrospector",
 }
+
+# 一套完整班子（新增员工角色，供 Leader 挑人时使用）
+TEAM_ROSTER = [
+    "leader", "aggregator", "rootcause",
+    "frontend", "backend", "fixer",
+    "tester", "releaser", "retrospector",
+    "doc-manager",
+]
 
 # 状态 → 期望的里程碑（该状态完成的标志）
 STATE_EXPECTED_MILESTONE: dict[State, Milestone] = {
@@ -98,6 +109,26 @@ class TaskState:
     iterations: int = 0                   # 打回次数（用于限制死循环）
     created_at: str = ""
     updated_at: str = ""
+    # 阶段参与者：{state.value: [员工名,...]} —— Leader 每阶段动态挑人的记录
+    stage_participants: dict[str, list[str]] = field(default_factory=dict)
+
+    def executor_for(self, state: State, participants: dict[str, str] | None = None) -> str:
+        """返回某阶段的执行者。
+
+        优先级：Leader 每阶段覆盖（participants[state.value]）> 默认 STATE_EXECUTOR。
+        这是「Leader 按阶段决定参与员工」的落地点。
+        """
+        if participants and state.value in participants:
+            return participants[state.value]
+        return STATE_EXECUTOR.get(state, "unknown")
+
+    def record_participant(self, state: State, participant: str) -> None:
+        """记录某阶段由哪个员工执行（阶段参与者字段）。"""
+        key = state.value
+        if key not in self.stage_participants:
+            self.stage_participants[key] = []
+        if participant not in self.stage_participants[key]:
+            self.stage_participants[key].append(participant)
 
     def advance(self, milestone: Milestone, verdict: str = "PASS", detail: str = "", by: str = "") -> State:
         """根据收到的里程碑推进/打回状态机。返回新状态。"""
@@ -106,6 +137,8 @@ class TaskState:
             "detail": detail,
             "by": by,
         }
+        if by:
+            self.record_participant(self.state, by)
         if verdict == "PASS":
             if milestone in (Milestone.TEST_FAILED, Milestone.RELEASE_ROLLED_BACK):
                 # 防御：PASS 不会带打回信号

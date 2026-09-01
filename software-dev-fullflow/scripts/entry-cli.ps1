@@ -25,7 +25,19 @@ $src = Join-Path $root "src"
 $venv = Join-Path $root "demo\.venv\Scripts\python.exe"
 if (-not (Test-Path $venv)) { $venv = "python" }
 
-# 从 controller 容器读 AGENTTEAMS_ADMIN_PASSWORD 作为默认（若未设置）
+# 统一配置：优先从项目根目录 .env 读取 AGENTTEAMS_ADMIN_PASSWORD（GAP-29 收敛）。
+# 读取顺序：真实环境变量 > .env > controller 容器（兜底，兼容未建 .env 的旧环境）。
+$dotenv = Join-Path $root ".env"
+if (-not $env:AGENTTEAMS_ADMIN_PASSWORD -and (Test-Path $dotenv)) {
+    $envLine = Get-Content $dotenv | Where-Object {
+        $_ -match '^\s*AGENTTEAMS_ADMIN_PASSWORD\s*=\s*(.+?)\s*$'
+    } | Select-Object -First 1
+    if ($envLine) {
+        $pwVal = ($envLine -split '=', 2)[1].Trim()
+        if ($pwVal) { $env:AGENTTEAMS_ADMIN_PASSWORD = $pwVal }
+    }
+}
+# 兜底：从 controller 容器读 AGENTTEAMS_ADMIN_PASSWORD（若仍未设置）
 if (-not $env:AGENTTEAMS_ADMIN_PASSWORD) {
     $pw = docker inspect $CTRL --format '{{range .Config.Env}}{{println .}}{{end}}' 2>$null |
         Where-Object { $_ -match '^AGENTTEAMS_ADMIN_PASSWORD=(.+)$' }

@@ -154,6 +154,49 @@ class TestTeamEvaluation:
         punished = score_team(ts, reject_counts={"fixer": 2}).scorecards["fixer"]
         assert punished.overall < base.overall
 
+    def test_growth_score_applies_015_weight(self):
+        """成长分按 0.5/0.35/0.15 计入综合分（对齐 KPI-BENCHMARK §3.4）。
+
+        验证：传 growth_scores 时走完整 0.5/0.35/0.15 公式，
+        且 growth>0 时综合分高于 growth=0 的退化分支（0.6/0.4）。
+
+        用低采纳度让 contrib<100，避免满分封顶掩盖 growth 抬升。
+        """
+        ts = TaskState(task_id="growth-002", spec="demo")
+        ts.advance(Milestone.FIX_APPLIED, by="fixer")
+        ts.artifacts = {"FIX_APPLY": "fixer.md"}
+        # 低采纳度（0.5）→ contrib < 100，综合分未封顶，growth 能体现
+        adoptions = {"fixer": 0.5}
+
+        base = score_team(ts, adoptions=adoptions).scorecards["fixer"]
+        with_growth = score_team(
+            ts, adoptions=adoptions, growth_scores={"fixer": 100.0},
+        ).scorecards["fixer"]
+        assert with_growth.growth_score == 100.0
+        assert with_growth.overall > base.overall
+        assert with_growth.overall <= 100.0
+
+        # 精确校验权重：qual=100、contrib=50（采纳度0.5）
+        #   growth=0  → 退化公式 0.6*100 + 0.4*50 = 80.0
+        #   growth=10 → 完整公式 0.5*100 + 0.35*50 + 0.15*10 = 69.0（0.15 权重生效）
+        card0 = score_team(
+            ts, adoptions=adoptions, growth_scores={"fixer": 0.0},
+        ).scorecards["fixer"]
+        card10 = score_team(
+            ts, adoptions=adoptions, growth_scores={"fixer": 10.0},
+        ).scorecards["fixer"]
+        assert card0.qual_score == 100.0
+        assert card0.contrib_score == 50.0
+        # growth=0 走退化 0.6/0.4
+        assert card0.overall == round(0.6 * card0.qual_score + 0.4 * card0.contrib_score, 1)
+        # growth=10 走完整 0.5/0.35/0.15，成长分占 0.15 权重
+        assert card10.overall == round(
+            0.5 * card10.qual_score + 0.35 * card10.contrib_score + 0.15 * card10.growth_score,
+            1,
+        )
+        # 成长分确实抬升：10 分成长贡献 0.15*10=1.5
+        assert card10.overall == round(0.5 * 100.0 + 0.35 * 50.0 + 0.15 * 10.0, 1)
+
     def test_scorecard_persistence(self, tmp_path: Path):
         """scorecard 可落盘到 agents/{role}/scorecard.json。"""
         ts = self._completed_task()

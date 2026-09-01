@@ -59,8 +59,9 @@ switch ($Mode) {
         if (-not $Url) { Write-Error "proxy 模式需 -Url"; exit 1 }
         $h = ""
         if ($Header) { $h = "--header `"$Header`"" }
+        $script = "/opt/agentteams/agent/skills/mcp-server-management/scripts/setup-mcp-proxy.sh"
         Write-Host "==> 调官方 setup-mcp-proxy.sh $Name" -ForegroundColor Cyan
-        docker exec $ControllerContainer bash -c "$env_init; setup-mcp-proxy.sh $Name $Url $Transport $h" 2>&1
+        docker exec $ControllerContainer bash -c "$env_init; bash $script $Name $Url $Transport $h" 2>&1
     }
     "yaml" {
         if (-not $Credential) { Write-Error "yaml 模式需 -Credential"; exit 1 }
@@ -70,8 +71,9 @@ switch ($Mode) {
         docker cp $YamlFile "${ControllerContainer}:${tmp}" | Out-Null
         $domain = ""
         if ($ApiDomain) { $domain = "--api-domain $ApiDomain" }
+        $script = "/opt/agentteams/agent/skills/mcp-server-management/scripts/setup-mcp-server.sh"
         Write-Host "==> 调官方 setup-mcp-server.sh $Name" -ForegroundColor Cyan
-        docker exec $ControllerContainer bash -c "$env_init; setup-mcp-server.sh $Name $Credential --yaml-file $tmp $domain" 2>&1
+        docker exec $ControllerContainer bash -c "$env_init; bash $script $Name $Credential --yaml-file $tmp $domain" 2>&1
     }
     "auth" {
         Write-Host "==> auth 模式：触发 Worker 拉取 mcporter 配置" -ForegroundColor Cyan

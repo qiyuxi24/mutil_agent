@@ -84,7 +84,7 @@ class UsageTracker:
     _FLUSH_INTERVAL = 5.0           # 后台定时落盘间隔（秒）
     _FLUSH_BATCH_SIZE = 50          # 积压超过此数量立即落盘
 
-    def __init__(self, stats_dir: Path):
+    def __init__(self, stats_dir: Path, flush_interval: float | None = None):
         self._stats_dir = Path(stats_dir)
         self._stats_dir.mkdir(parents=True, exist_ok=True)
         self._file = self._stats_dir / "usage_stats.json"
@@ -93,6 +93,9 @@ class UsageTracker:
         self._lock = threading.Lock()
         self._stats: UsageStats = self._load()
         self._queue: deque[dict] = deque()  # 待处理事件队列
+
+        # 后台 flush 间隔：默认 5s，测试可传更小值以加速线程退出/落盘
+        self._flush_interval = self._FLUSH_INTERVAL if flush_interval is None else float(flush_interval)
 
         # 后台线程
         self._running = True
@@ -318,7 +321,7 @@ class UsageTracker:
     def _background_flush(self) -> None:
         """后台线程：定时落盘。"""
         while self._running:
-            time.sleep(self._FLUSH_INTERVAL)
+            time.sleep(self._flush_interval)
             if not self._running:
                 break
             self._process_queue()

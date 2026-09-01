@@ -1,0 +1,1087 @@
+#!/usr/bin/env python3
+"""Grok Designer CLI."""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import concurrent.futures
+import datetime as dt
+import json
+import mimetypes
+import os
+import pathlib
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from typing import Iterable
+import tomllib
+import urllib.error
+import urllib.request
+import xml.etree.ElementTree as ET
+
+
+CONFIG_DIR = pathlib.Path(
+    os.environ.get("GROK_DESIGNER_CONFIG_DIR", "~/.config/grok-designer")
+).expanduser()
+CONFIG_PATH = CONFIG_DIR / "config.toml"
+DEFAULT_API_KEY_FILE = CONFIG_DIR / "api_key"
+DEFAULT_BASE_URL = "https://zenmux.ai/api/v1"
+DEFAULT_MODEL = "x-ai/grok-4.5"
+DEFAULT_OUTPUT_DIR = pathlib.Path(".grok-designer")
+DEFAULT_MAX_CHARS = 260_000
+DEFAULT_MAX_IMAGE_BYTES = 8_000_000
+DEFAULT_IMAGE_OPTIMIZE = True
+DEFAULT_IMAGE_FORMAT = "webp"
+DEFAULT_IMAGE_WEBP_LOSSLESS = True
+DEFAULT_IMAGE_WEBP_QUALITY = 86
+DEFAULT_IMAGE_MAX_LONG_EDGE = 2200
+READABLE_OUTPUT_REQUIRED_COMMANDS = {"ui", "ux", "direction"}
+HTML_FORBIDDEN_PATTERNS = [
+    (
+        "file_url",
+        re.compile(r"file://", re.IGNORECASE),
+        "Generated HTML contains a local file:// URL.",
+        "Retry the command. HTML output should contain source code and normal web/data URLs, not local file links.",
+    ),
+    (
+        "markdown_fence",
+        re.compile(r"```"),
+        "Generated HTML contains Markdown code fences.",
+        "Retry the command. HTML output must be raw source only.",
+    ),
+]
+
+
+def fail(error: str, message: str, hint: str | None = None, code: int = 1) -> None:
+    print(f"error={error}", file=sys.stderr)
+    print(f"message={message}", file=sys.stderr)
+    if hint:
+        print(f"hint={hint}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+class DesignerArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        fail(
+            "invalid_args",
+            message,
+            f"Run `{self.prog} --help` for usage.",
+            code=2,
+        )
+
+
+COMMON_RULES = """General context:
+
+- You are stateless.
+- You can only see the user goal, file contents, and image contents included in this request.
+- Do not assume you know the project, previous conversation, screenshots, design rules, or files that were not provided.
+- Keep independent judgment. Do not flatter the user or add polite praise.
+"""
+
+
+COMMAND_PROMPTS = {
+    "ui": """Role:
+You are an expert visual and UI designer.
+
+Task:
+Critique and optimize the visual execution of the provided UI context.
+
+Focus strictly on:
+- Information hierarchy and reading rhythm.
+- Typography scale, weight, line-height, and density.
+- Color harmony, contrast, visual weight, and brand fit.
+- Spacing, alignment, borders, shadows, surfaces, and UI finish.
+- Component appearance, visual consistency, and emotional tone.
+
+Constraints:
+- Do not review code quality, CSS hygiene, technical debt, file structure, or implementation architecture.
+- Do not suggest new product features, business logic changes, or interaction-flow redesign unless a visual issue makes the current UI unusable.
+- Do not output full HTML.
+- Do not restate the file contents.
+- Do not try to prove the current solution is correct.
+- Do not suggest rewriting the entire page.
+- Do not suggest that the main agent create a separate component set, style-token system, layout system, or visual language.
+- Do not overturn the existing style unless the provided files show that the style cannot support the goal.
+- Do not suggest unrelated decorative additions.
+- You may not know what components exist in the project. Based only on provided files, generally remind the main agent to look for and reuse existing components, classes, selectors, tokens, variables, and style patterns.
+- If reusable objects are clearly visible in the provided files, name them. If they are not visible, do not invent component names.
+- Turn design insight into design expression whenever possible. Prefer UI structure, state examples, visual hierarchy, module relationships, component variants, or interaction demos over explanatory prose.
+- Visual design does not need to fill every area. Strong visual treatment should serve key actions, brand memory, and key content entry points; other areas should stay quiet, stable, and easy to scan.
+- Look for places where animation, SVG, or material treatment can improve the interface, such as key state feedback, brand memory, content entry points, or complex relationship expression. If it would only decorate, disrupt scanning, or add maintenance burden, do not suggest it.
+- Give concrete visual recommendations that can be implemented directly.
+
+If key context is missing, output only:
+1. Needed context: explain why reliable UI judgment is not possible.
+2. Suggested files or information: explain why each item is needed.
+3. Rerun UI review: give an example command using `grok-designer ui ... -f ...` or `-i ...`.
+
+Output format:
+1. Issues with the largest UI impact: order by importance, and explain evidence and impact.
+2. Actionable changes: each item should include when useful:
+   - Location: reference a locatable section, component, copy, selector, class, token, or screenshot area.
+   - Reuse reminder: remind the main agent to first look for and reuse existing components, classes, selectors, tokens, variables, or style patterns; name reusable objects only when they are clearly visible in the files.
+   - Change: provide concrete hierarchy, spacing, color, type, shadow, border, state, or layout guidance.
+   - Pseudocode: when useful, include pseudocode, a CSS snippet, or a JSX structure snippet to explain the change; use enough length to make the change clear, but do not output a full file.
+   - UI benefit: explain how the change improves impression, hierarchy, rhythm, or consistency.
+   - Risk: point out possible visual risks.
+3. Do not change: only list specific areas, components, tokens, copy, visual traits, or states that should be preserved, and explain why. Do not repeat broad design-direction summaries.
+""",
+    "ux": """Role:
+You are an expert UX and interaction designer.
+
+Task:
+Evaluate the task model, user flow, interaction friction, and state behavior in the provided context.
+
+Focus strictly on:
+- Whether the interface matches the user's natural task model.
+- Whether the chosen component or control pattern matches the task, such as using an editable tag/chip editor for tag editing instead of separate add and delete inputs.
+- Cognitive load, decision points, and unnecessary steps.
+- Interaction friction, bottlenecks, and confusing control structure.
+- Loading, error, empty, success, disabled, hover, focus, and active states.
+- Affordance, recoverability, validation, navigation clarity, and accessibility when it affects usability.
+- Microcopy that helps users understand what happened, what they can do, and what happens next.
+
+Constraints:
+- Do not critique pure visual styling such as colors, fonts, shadows, or corner radius unless it directly harms usability or affordance.
+- Do not suggest generic product strategy, new business features, gamification, onboarding campaigns, or broad repositioning.
+- Do not review code quality, technical architecture, CSS hygiene, or file structure.
+- Do not output full HTML.
+- Work within the existing product scope and user goal.
+- Do not invent a custom component when a standard or existing component pattern would better fit the task.
+- Prefer changes to the task structure, control model, state feedback, validation, copy, and layout relationships that make the current journey easier to use.
+
+If key context is missing, output only:
+1. Needed context: explain why reliable UX judgment is not possible.
+2. Suggested files or information: explain why each item is needed, such as state logic, routing, form validation, component code, available component patterns, or sequential screenshots.
+3. Rerun UX review: give an example command using `grok-designer ux ... -f ...` or `-i ...`.
+
+Output format:
+1. UX issues by task impact: order by the user's task, and explain evidence and impact.
+2. Actionable changes: each item should include when useful:
+   - Location: reference a locatable flow step, component, control, state, copy, route, or screenshot area.
+   - Current friction: explain what makes the task harder, slower, ambiguous, or error-prone.
+   - Component choice: say whether the chosen control pattern fits the task model, and name a better standard or existing pattern only when it is supported by the provided context or common UI convention.
+   - Change: provide concrete structural, interaction, copy, state, or layout changes.
+   - State behavior: describe relevant loading, error, empty, success, disabled, hover, focus, or active states.
+   - UX benefit: explain how the change reduces friction, clarifies the mental model, or improves recoverability.
+   - Risk: point out possible tradeoffs or edge cases.
+3. Do not change: only list specific flows, controls, copy, states, or task assumptions that should be preserved, and explain why.
+""",
+    "direction": """Role:
+You are a visual design director.
+
+Task:
+Generate high-quality design imagery markdown as a visual design director. Focus on product transformation relationships, industry cliches to avoid, implementable visual metaphors, materiality, composition, motion, and typographic character.
+
+Constraints:
+- Do not output full HTML.
+- Do not write code.
+- Ground the design direction in the product subject, user scenario, real content, page goal, and provided visual signals. Do not apply generic AI templates.
+- Avoid default category stereotypes and generic AI cliches. Do not default to conventional tech, cyberpunk, neon, dashboard, or SaaS-template aesthetics unless the subject, audience, or provided references clearly support them.
+- Keep the subject immediately recognizable. When the subject depends on living beings, places, objects, crowds, scale, texture, emotion, or sensory experience, preserve enough concrete visual anchors through imagery, illustration, SVG, content examples, UI states, material, or motion so users can identify the subject without reading explanatory copy.
+- Write less conceptual explanation and more design expression that an implementer can directly turn into visuals.
+- Choose the design dimensions that truly affect this task, such as typographic character, color relationships, spatial rhythm, motion necessity, material detail, component character, and copy tone. You do not need to expand every dimension.
+- Each direction should have an explainable memorable idea: state what users will remember and why it belongs to this product or scenario.
+- Use purposeful contrast when it strengthens the idea, such as quiet versus intense areas, dense versus open rhythm, tactile versus flat material, intimate versus public scale, or static versus motion. The contrast should create surprise and clarity, not visual noise.
+- Actively consider animation, SVG, materiality, composition, and component character as design-expression tools, especially for key actions, brand memory, key content entry points, state feedback, and complex relationship expression.
+- Explain where they should appear, what they express, how to implement them with restraint, and which areas they should not spread into.
+- Carry the judgment through first-screen structure, module relationships, state examples, visual hierarchy, materiality, composition, motion, and component character.
+- Control visual-intensity distribution. Strong visual treatment belongs only on key actions, brand memory, and key content entry points; supporting areas should stay quiet, stable, and easy to scan.
+- Do not add unnecessary promotional copy, explanatory copy, or slogans. Keep only short labels, headings, buttons, data, and state messages that a real interface may need.
+- Treat copy as interface material. Headings, buttons, labels, errors, empty states, and success states should help users understand and act, avoiding empty slogans.
+- If product information, audience, page goal, or reference files are missing, state what is missing and which visual judgments those missing inputs affect.
+
+Output format:
+1. Core visual judgment: explain the key design judgment.
+2. Cliches to avoid: list directions that would weaken distinctiveness.
+3. Candidate visual directions: each should include metaphor, subject, materiality, composition, motion, typographic character, why it fits, and major risks.
+4. Recommended direction: recommend the best-fitting direction and explain why.
+""",
+    "html": """Role:
+You are a UI and web visual designer.
+
+Task:
+Create a self-contained HTML design draft. Focus on clear information hierarchy, distinctive visual imagery, complete interaction states, and mature UI finish.
+
+Output requirements:
+- Output one complete HTML file. It must start with <!doctype html> or <html and end with </html>.
+- Put CSS in <style> and JS in <script>.
+- Use realistic placeholder content. Do not use lorem ipsum.
+- Ground the design direction in the user goal, product subject, real content, and reference files. Do not apply generic AI templates.
+- Avoid default category stereotypes and generic AI cliches. Do not default to conventional tech, cyberpunk, neon, dashboard, or SaaS-template aesthetics unless the subject, audience, or provided references clearly support them.
+- Keep the subject immediately recognizable. When the subject depends on living beings, places, objects, crowds, scale, texture, emotion, or sensory experience, preserve enough concrete visual anchors through imagery, illustration, SVG, content examples, UI states, material, or motion so users can identify the subject without reading explanatory copy.
+- Design one restrained but clear memorable idea, and make it serve a key action, brand memory, or key content entry point. Do not make every module the protagonist.
+- Use purposeful contrast when it strengthens the design, such as quiet versus intense areas, dense versus open rhythm, tactile versus flat material, intimate versus public scale, or static versus motion. The contrast should create surprise and clarity while the whole page remains coherent and readable.
+- Express functionality and design intent through real UI, state examples, data examples, component variants, and simple interaction demos whenever possible. Do not rely on explanatory paragraphs.
+- Actively use inline SVG, CSS animation, transitions, micro-interactions, and material feel to express brand memory, state feedback, key content entry points, or complex relationships, but do not make every module animated, glowing, or textured.
+- Animation should be short, light, and perceptible. Prefer animation for real UI states such as hover, focus, switching, expanding, progress, selection, empty states, and success states.
+- Materiality should support hierarchy and tactility, such as paper, glass, metal, fabric, ink, gloss, or noise texture. Use it only in key areas and keep supporting areas clean.
+- Keep page copy restrained. Include only headings, labels, buttons, data, states, and short hints the interface truly needs.
+- Copy should help users understand and act. Buttons, labels, errors, empty states, and success states should be specific, natural, and consistent.
+- Distribute visual intensity with restraint. Use strong visual treatment for key actions, brand memory, and key content entry points; keep lists, forms, explanations, and supporting information quiet, stable, and easy to scan.
+- Avoid turning the page into a design-spec document, long explanatory page, or marketing-copy stack.
+- Output raw HTML source only. The first non-whitespace character must be <.
+- Do not output Markdown code fences, explanatory text, file paths, file:// URLs, download links, or "file created" messages.
+- Do not put any explanatory text before or after the HTML.
+""",
+    "svg": """Role:
+You are an SVG icon, simple illustration, and handwritten wordmark designer.
+
+Task:
+Create a clean, expressive SVG icon, simple illustration, or handwritten brand wordmark.
+
+Output requirements:
+- The SVG must include a reasonable viewBox.
+- The structure should be clear and suitable for direct saving or embedding in a page.
+- For handwritten wordmarks, create a one-off SVG brand mark, not a full font system.
+- For handwritten wordmarks, prefer hand-shaped SVG paths over normal text. The lettering must remain readable.
+- Default handwritten wordmarks to paper-and-ink tactility: pen pressure, connected strokes, ink edges, slight bleed, paper friction, pencil or soft marker feel.
+- Small finishing marks are allowed when useful, such as a dot, underline, stamp, registration tick, ink pool, or delayed accent. Keep them subordinate to the wordmark.
+- If animation is useful, keep it inside the SVG with lightweight <style> animation, and make it feel like real writing: start, travel, pressure, release, and a restrained finishing beat.
+- Avoid neon, glow, metallic, sci-fi, hard vector grid, and effect-logo treatments for wordmarks unless the user explicitly asks for that direction.
+- SVG is XML. Escape literal ampersands as &amp; or avoid them, including inside <style> comments and visible text.
+- Output SVG code only.
+""",
+}
+
+OUTPUT_TYPES = {
+    "html": "html",
+    "svg": "svg",
+}
+VALID_COMMANDS = set(COMMAND_PROMPTS)
+
+
+def parse_command_list(command_text: str) -> list[str]:
+    commands = [part.strip() for part in re.split(r"[,+]", command_text) if part.strip()]
+    if not commands:
+        fail(
+            "invalid_args",
+            "Missing command.",
+            "Use a command such as ui, ux, direction, html, or svg.",
+            code=2,
+        )
+    unknown = [command for command in commands if command not in VALID_COMMANDS]
+    if unknown:
+        fail(
+            "invalid_args",
+            f"Unknown command: {', '.join(unknown)}",
+            f"Valid commands: {', '.join(sorted(VALID_COMMANDS))}.",
+            code=2,
+        )
+    seen = set()
+    unique_commands = []
+    for command in commands:
+        if command not in seen:
+            unique_commands.append(command)
+            seen.add(command)
+    if len(unique_commands) > 1 and any(command in OUTPUT_TYPES for command in unique_commands):
+        fail(
+            "invalid_args",
+            "Multiple commands are only supported for markdown review commands.",
+            "Run html or svg as a separate command.",
+            code=2,
+        )
+    return unique_commands
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = DesignerArgumentParser(
+        prog="grok-designer",
+        description="Ask Grok Designer through one stable CLI.",
+        epilog=(
+            "Commands: ui = visual/UI review, optionally with -f or -i; "
+            "ux = interaction and task-flow review, optionally with -f or -i; "
+            "direction = broad art direction, optionally with -f; "
+            "html = new standalone HTML, optionally with -f; "
+            "svg = new standalone SVG, optionally with -f; "
+            "use comma-separated markdown review commands such as ui,ux to run them together; "
+            "Debug only: grok-designer auth status shows whether local authorization is configured."
+        ),
+    )
+    parser.add_argument(
+        "command",
+        help="Design task command, or comma-separated markdown review commands such as ui,ux.",
+    )
+    parser.add_argument(
+        "task",
+        nargs="?",
+        default="Please complete this visual design task.",
+        help="User task.",
+    )
+    parser.add_argument(
+        "-f",
+        "--file",
+        action="append",
+        default=[],
+        help="File to include. Can be repeated.",
+    )
+    parser.add_argument(
+        "-i",
+        "--image",
+        action="append",
+        default=[],
+        help="Image to include as visual context. Can be repeated.",
+    )
+    parser.add_argument(
+        "-o",
+        "--out",
+        help="Output name or path. Bare file names are saved under the configured output_dir.",
+    )
+    parser.add_argument(
+        "--max-chars",
+        type=int,
+        default=None,
+        help=f"Maximum total file characters. Default: config or {DEFAULT_MAX_CHARS}.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Write the assembled prompt instead of calling Grok.",
+    )
+    args = parser.parse_args(argv)
+    args.commands = parse_command_list(args.command)
+    return args
+
+
+def require_readable_output(args: argparse.Namespace) -> None:
+    missing = [command for command in args.commands if command in READABLE_OUTPUT_REQUIRED_COMMANDS]
+    if missing and not args.out:
+        fail(
+            "missing_output",
+            f"`{', '.join(missing)}` requires -o with a readable markdown file name.",
+            f"Use: grok-designer {args.command} \"your task\" -o readable-name.md",
+        )
+
+
+def load_config() -> dict[str, object]:
+    config: dict[str, object] = {
+        "api_key_file": str(DEFAULT_API_KEY_FILE),
+        "base_url": DEFAULT_BASE_URL,
+        "model": DEFAULT_MODEL,
+        "output_dir": str(DEFAULT_OUTPUT_DIR),
+        "max_chars": DEFAULT_MAX_CHARS,
+        "max_image_bytes": DEFAULT_MAX_IMAGE_BYTES,
+        "image_optimize": DEFAULT_IMAGE_OPTIMIZE,
+        "image_format": DEFAULT_IMAGE_FORMAT,
+        "image_webp_lossless": DEFAULT_IMAGE_WEBP_LOSSLESS,
+        "image_webp_quality": DEFAULT_IMAGE_WEBP_QUALITY,
+        "image_max_long_edge": DEFAULT_IMAGE_MAX_LONG_EDGE,
+    }
+    if CONFIG_PATH.exists():
+        try:
+            data = tomllib.loads(CONFIG_PATH.read_text())
+        except tomllib.TOMLDecodeError as error:
+            fail(
+                "invalid_config",
+                f"Config file is not valid TOML: {CONFIG_PATH}",
+                f"Fix the TOML syntax. Details: {error}",
+            )
+        for key in config:
+            if key in data:
+                config[key] = data[key]
+    return config
+
+
+def resolve_path(value: object) -> pathlib.Path:
+    return pathlib.Path(str(value)).expanduser()
+
+
+def config_bool(config: dict[str, object], key: str) -> bool:
+    value = config[key]
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    fail(
+        "invalid_config",
+        f"`{key}` must be a boolean.",
+        "Fix ~/.config/grok-designer/config.toml.",
+    )
+
+
+def config_int(config: dict[str, object], key: str) -> int:
+    try:
+        return int(config[key])
+    except (TypeError, ValueError):
+        fail(
+            "invalid_config",
+            f"`{key}` must be an integer.",
+            "Fix ~/.config/grok-designer/config.toml.",
+        )
+
+
+def read_api_key(config: dict[str, object]) -> tuple[pathlib.Path, str | None]:
+    key_path = resolve_path(config["api_key_file"])
+    if not key_path.exists():
+        return key_path, None
+    key = key_path.read_text().strip()
+    return key_path, key or None
+
+
+def print_auth_status() -> int:
+    config = load_config()
+    _, key = read_api_key(config)
+    status = "authorized" if key else "missing"
+    print(f"status={status}")
+    return 0 if key else 1
+
+
+def handle_auth(argv: list[str]) -> int:
+    parser = DesignerArgumentParser(prog="grok-designer auth")
+    parser.add_argument("command", choices=["status"])
+    args = parser.parse_args(argv)
+    if args.command == "status":
+        return print_auth_status()
+    return 2
+
+
+def read_file(path_text: str) -> tuple[pathlib.Path, str]:
+    path = pathlib.Path(path_text).expanduser()
+    if path_text.startswith("file://"):
+        path = pathlib.Path(path_text.removeprefix("file://"))
+    if not path.exists():
+        fail(
+            "file_not_found",
+            f"File does not exist: {path}",
+            "Check the path, or pass a valid file:// URL.",
+        )
+    if not path.is_file():
+        fail(
+            "not_a_file",
+            f"Path is not a file: {path}",
+            "Pass a text file with -f. Directories are not supported.",
+        )
+    try:
+        return path.resolve(), path.read_text()
+    except UnicodeDecodeError:
+        fail(
+            "not_utf8",
+            f"File is not UTF-8 text: {path}",
+            "Pass source files, HTML, CSS, TSX, or markdown text files.",
+        )
+
+
+def resolve_input_path(path_text: str) -> pathlib.Path:
+    path = pathlib.Path(path_text).expanduser()
+    if path_text.startswith("file://"):
+        path = pathlib.Path(path_text.removeprefix("file://"))
+    return path
+
+
+def image_dimensions(path: pathlib.Path) -> tuple[int, int] | None:
+    sips = shutil.which("sips")
+    if not sips:
+        return None
+    try:
+        result = subprocess.run(
+            [sips, "-g", "pixelWidth", "-g", "pixelHeight", str(path)],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    width = height = None
+    for line in result.stdout.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("pixelWidth:"):
+            width = int(stripped.split(":", 1)[1].strip())
+        elif stripped.startswith("pixelHeight:"):
+            height = int(stripped.split(":", 1)[1].strip())
+    if width and height:
+        return width, height
+    return None
+
+
+def resize_for_long_edge(path: pathlib.Path, max_long_edge: int) -> tuple[int, int] | None:
+    if max_long_edge <= 0:
+        return None
+    dimensions = image_dimensions(path)
+    if not dimensions:
+        return None
+    width, height = dimensions
+    long_edge = max(width, height)
+    if long_edge <= max_long_edge:
+        return None
+    scale = max_long_edge / long_edge
+    return max(1, round(width * scale)), max(1, round(height * scale))
+
+
+def optimize_image_to_webp(
+    path: pathlib.Path,
+    data: bytes,
+    mime: str,
+    config: dict[str, object],
+) -> dict[str, object] | None:
+    if not config_bool(config, "image_optimize"):
+        return None
+    if str(config["image_format"]).strip().lower() != "webp":
+        return None
+    if mime in {"image/webp", "image/gif"}:
+        return None
+    cwebp = shutil.which("cwebp")
+    if not cwebp:
+        return None
+
+    lossless = config_bool(config, "image_webp_lossless")
+    quality = config_int(config, "image_webp_quality")
+    max_long_edge = config_int(config, "image_max_long_edge")
+    with tempfile.TemporaryDirectory(prefix="grok-designer-image-") as tmpdir:
+        out_path = pathlib.Path(tmpdir) / "optimized.webp"
+        command = [cwebp, "-quiet"]
+        resize = resize_for_long_edge(path, max_long_edge)
+        if resize:
+            command.extend(["-resize", str(resize[0]), str(resize[1])])
+        if lossless:
+            command.append("-lossless")
+        else:
+            command.extend(["-q", str(quality)])
+        command.extend([str(path), "-o", str(out_path)])
+        try:
+            subprocess.run(
+                command,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            optimized_data = out_path.read_bytes()
+        except (OSError, subprocess.CalledProcessError):
+            return None
+
+    if len(optimized_data) >= len(data) and not resize:
+        return None
+    return {
+        "mime": "image/webp",
+        "data": optimized_data,
+        "optimized": True,
+        "optimized_format": "webp",
+        "resized": bool(resize),
+    }
+
+
+def read_image(path_text: str, config: dict[str, object]) -> dict[str, object]:
+    path = resolve_input_path(path_text)
+    if not path.exists():
+        fail(
+            "image_not_found",
+            f"Image does not exist: {path}",
+            "Check the path, or pass a valid file:// URL.",
+        )
+    if not path.is_file():
+        fail(
+            "not_an_image_file",
+            f"Path is not a file: {path}",
+            "Pass an image file with -i, such as PNG, JPEG, WebP, or GIF.",
+        )
+    mime, _ = mimetypes.guess_type(path.name)
+    if not mime or not mime.startswith("image/"):
+        fail(
+            "unsupported_image",
+            f"Unsupported image type: {path}",
+            "Pass PNG, JPEG, WebP, GIF, or another image file with a known extension.",
+        )
+    resolved_path = path.resolve()
+    data = path.read_bytes()
+    image: dict[str, object] = {
+        "path": resolved_path,
+        "source_mime": mime,
+        "source_bytes": len(data),
+        "mime": mime,
+        "data": data,
+        "optimized": False,
+    }
+    optimized = optimize_image_to_webp(resolved_path, data, mime, config)
+    if optimized:
+        image.update(optimized)
+    max_image_bytes = config_int(config, "max_image_bytes")
+    sent_bytes = len(image["data"])
+    if sent_bytes > max_image_bytes:
+        fail(
+            "image_too_large",
+            f"Image is too large after optimization: {resolved_path} ({sent_bytes} bytes). Limit: {max_image_bytes} bytes.",
+            "Use a smaller screenshot, pass fewer images, or increase `max_image_bytes` in the config.",
+        )
+    return image
+
+
+def build_files_text(files: Iterable[tuple[pathlib.Path, str]], max_chars: int) -> str:
+    parts: list[str] = []
+    total = 0
+    file_list = list(files)
+
+    for path, content in file_list:
+        total += len(content)
+        if total > max_chars:
+            fail(
+                "context_too_large",
+                f"Included files are too large. Limit: {max_chars} chars. Current total: {total} chars.",
+                "Pass fewer files, increase --max-chars, or choose representative design-system files.",
+            )
+
+    if len(file_list) == 1:
+        return file_list[0][1]
+
+    for path, content in file_list:
+        parts.append(f"\n--- FILE: {path} ---\n")
+        parts.append(content)
+        parts.append("\n")
+    return "\n".join(parts)
+
+
+def build_image_manifest(images: Iterable[dict[str, object]]) -> str:
+    lines = []
+    for image in images:
+        source_mime = image.get("source_mime", image["mime"])
+        source_bytes = int(image.get("source_bytes", len(image["data"])))
+        sent_bytes = len(image["data"])
+        if image.get("optimized"):
+            details = f"{source_mime}, {source_bytes} bytes; sent {image['mime']}, {sent_bytes} bytes"
+            if image.get("resized"):
+                details += "; resized"
+            lines.append(f"- {image['path']} ({details})")
+        else:
+            lines.append(f"- {image['path']} ({image['mime']}, {sent_bytes} bytes)")
+    return "\n".join(lines)
+
+
+def build_prompt(
+    args: argparse.Namespace,
+    command: str,
+    max_chars: int,
+    images: list[dict[str, object]],
+) -> tuple[str, list[tuple[pathlib.Path, str]]]:
+    files = [read_file(path) for path in args.file]
+    prompt_parts = [
+        COMMON_RULES.strip(),
+        COMMAND_PROMPTS[command].strip(),
+    ]
+
+    if files:
+        file_content = build_files_text(files, max_chars)
+        prompt_parts.extend(
+            [
+                "Reference and context files:",
+                "The following files provide context, existing style, design rules, content, or component references. Do not interpret them as files you should directly modify unless the user goal explicitly says so.",
+                file_content,
+            ]
+        )
+    if images:
+        prompt_parts.extend(["Image context:", build_image_manifest(images)])
+
+    prompt_parts.extend(
+        [
+            "Final user goal:",
+            "Use the reference files and images only as context. The following user goal is the task to satisfy:",
+            args.task.strip(),
+        ]
+    )
+
+    return "\n\n".join(prompt_parts), files
+
+
+def original_prompt_appendix(
+    command: str,
+    args: argparse.Namespace,
+    files: list[tuple[pathlib.Path, str]],
+    images: list[dict[str, object]],
+) -> str:
+    if command not in READABLE_OUTPUT_REQUIRED_COMMANDS:
+        return ""
+
+    task = args.task.strip().replace("```", "'''")
+    lines = [
+        "",
+        "---",
+        "",
+        "## Original Prompt",
+        "",
+        "```text",
+        task,
+        "```",
+    ]
+    if files:
+        lines.extend(["", "### Referenced Files"])
+        lines.extend(f"- {path}" for path, _ in files)
+    if images:
+        lines.extend(["", "### Referenced Images"])
+        lines.extend(build_image_manifest(images).splitlines())
+    return "\n".join(lines) + "\n"
+
+
+def output_extension(command: str) -> str:
+    return OUTPUT_TYPES.get(command, "md")
+
+
+def default_output_path(command: str, output_dir: pathlib.Path) -> pathlib.Path:
+    timestamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    return output_dir / f"{timestamp}-{command}.{output_extension(command)}"
+
+
+def suffix_output_path(path: pathlib.Path, command: str) -> pathlib.Path:
+    suffix = path.suffix or ".md"
+    return path.with_name(f"{path.stem}-{command}{suffix}")
+
+
+def resolve_output_path(
+    args: argparse.Namespace,
+    command: str,
+    output_dir: pathlib.Path,
+    multiple: bool,
+) -> pathlib.Path:
+    if not args.out:
+        return default_output_path(command, output_dir)
+    requested = pathlib.Path(args.out).expanduser()
+    has_directory = (
+        requested.is_absolute()
+        or "/" in args.out
+        or (os.altsep is not None and os.altsep in args.out)
+    )
+    if has_directory:
+        return suffix_output_path(requested, command) if multiple else requested
+    output_path = output_dir / requested
+    return suffix_output_path(output_path, command) if multiple else output_path
+
+
+def system_prompt(command: str) -> str:
+    if command == "html":
+        return (
+            "You are an excellent UI and web visual designer. Output only one complete, "
+            "self-contained raw HTML document. The first non-whitespace character must be <. "
+            "Do not output Markdown code fences, explanatory text, file paths, file:// URLs, "
+            "or download links."
+        )
+    if command == "svg":
+        return "You are an excellent icon and simple illustration designer. Output only valid SVG source."
+    if command == "ux":
+        return "You are an independent UX and interaction design advisor. Respond in the same language as the user goal."
+    if command == "direction":
+        return "You are an independent visual design director. Respond in the same language as the user goal."
+    return "You are an independent visual and UI design advisor. Respond in the same language as the user goal."
+
+
+def strip_code_fence(content: str) -> str:
+    stripped = content.strip()
+    fence_match = re.fullmatch(r"```(?:[A-Za-z0-9_-]+)?\s*\n([\s\S]*?)\n```", stripped)
+    if fence_match:
+        return fence_match.group(1).strip()
+    return stripped
+
+
+def normalize_html_output(content: str, command: str = "html") -> str:
+    content = strip_code_fence(content)
+    start_match = re.search(r"(?is)<!doctype\s+html\b|<html\b", content)
+    end_match = re.search(r"(?is)</html\s*>", content)
+    if not start_match or not end_match:
+        fail(
+            "invalid_generated_output",
+            "Grok did not return a complete HTML document.",
+            f"Retry the command. The {command} command requires raw HTML, not explanations, file URLs, or partial fragments.",
+        )
+    html = content[start_match.start() : end_match.end()].strip()
+    validate_html_integrity(html, command)
+    return html + "\n"
+
+
+def normalize_svg_output(content: str) -> str:
+    content = strip_code_fence(content)
+    start = content.lower().find("<svg")
+    end = content.lower().rfind("</svg>")
+    if start == -1 or end == -1:
+        fail(
+            "invalid_generated_output",
+            "Grok did not return valid SVG source.",
+            "Retry the command. The svg command requires raw SVG, not explanations or file URLs.",
+        )
+    svg = content[start : end + len("</svg>")].strip()
+    svg = escape_bare_xml_ampersands(svg)
+    validate_svg_integrity(svg)
+    return svg + "\n"
+
+
+def validate_html_integrity(content: str, command: str) -> None:
+    stripped = content.strip()
+    if not stripped.startswith("<"):
+        fail(
+            "invalid_generated_output",
+            "Grok returned HTML with text before the document.",
+            f"Retry the command. The {command} command requires raw HTML source only.",
+        )
+    if not re.match(r"(?is)\A\s*(<!doctype\s+html\b|<html\b)", stripped):
+        fail(
+            "invalid_generated_output",
+            "Grok returned HTML that does not start with a doctype or <html>.",
+            f"Retry the command. The {command} command requires one complete HTML document.",
+        )
+    if not re.search(r"(?is)</html\s*>\s*\Z", stripped):
+        fail(
+            "invalid_generated_output",
+            "Grok returned HTML that does not end with </html>.",
+            f"Retry the command. The {command} command requires one complete HTML document.",
+        )
+    lowered = stripped.lower()
+    for required in ("<head", "</head>", "<body", "</body>"):
+        if required not in lowered:
+            fail(
+                "invalid_generated_output",
+                f"Grok returned incomplete HTML. Missing `{required}`.",
+                f"Retry the command. The {command} command requires a complete document with head and body.",
+            )
+    for error, pattern, message, hint in HTML_FORBIDDEN_PATTERNS:
+        if pattern.search(stripped):
+            fail(f"invalid_generated_output_{error}", message, hint)
+    if re.search(r"(?is)\blorem\s+ipsum\b", stripped):
+        fail(
+            "invalid_generated_output_lorem_ipsum",
+            "Generated HTML contains lorem ipsum placeholder text.",
+            "Retry the command with a concrete content goal. The html command requires realistic placeholder content.",
+        )
+
+
+def validate_svg_integrity(content: str) -> None:
+    stripped = content.strip()
+    if not stripped.startswith("<svg"):
+        fail(
+            "invalid_generated_output",
+            "Grok returned SVG with text before the <svg> root.",
+            "Retry the command. The svg command requires raw SVG source only.",
+        )
+    if "```" in stripped or "file://" in stripped.lower():
+        fail(
+            "invalid_generated_output",
+            "Grok returned SVG with output wrapper text or a local file URL.",
+            "Retry the command. The svg command requires raw SVG source only.",
+        )
+    validate_svg_xml(stripped)
+
+
+def escape_bare_xml_ampersands(content: str) -> str:
+    return re.sub(
+        r"&(?!#\d+;|#x[0-9A-Fa-f]+;|[A-Za-z][A-Za-z0-9._:-]*;)",
+        "&amp;",
+        content,
+    )
+
+
+def validate_svg_xml(content: str) -> None:
+    try:
+        root = ET.fromstring(content)
+    except ET.ParseError as error:
+        fail(
+            "invalid_generated_output",
+            f"Grok returned SVG that is not valid XML: {error}",
+            "Retry the command. The svg command requires XML-valid SVG source.",
+        )
+    if not root.tag.endswith("svg"):
+        fail(
+            "invalid_generated_output",
+            "Grok returned XML, but the root element is not SVG.",
+            "Retry the command. The svg command requires an <svg> root element.",
+        )
+
+
+def normalize_model_output(content: str, command: str) -> str:
+    if command not in OUTPUT_TYPES:
+        return content
+    if command == "html":
+        return normalize_html_output(content, command)
+    if command == "svg":
+        return normalize_svg_output(content)
+    return strip_code_fence(content) + "\n"
+
+
+def image_content_parts(images: list[dict[str, object]]) -> list[dict[str, object]]:
+    parts = []
+    for image in images:
+        encoded = base64.b64encode(image["data"]).decode("ascii")
+        parts.append(
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:{image['mime']};base64,{encoded}",
+                },
+            }
+        )
+    return parts
+
+
+def user_message_content(prompt: str, images: list[dict[str, object]]) -> object:
+    if not images:
+        return prompt
+    return [{"type": "text", "text": prompt}, *image_content_parts(images)]
+
+
+def request_grok(
+    prompt: str,
+    command: str,
+    config: dict[str, object],
+    api_key: str,
+    images: list[dict[str, object]],
+) -> str:
+    base_url = str(config["base_url"]).rstrip("/")
+    request = urllib.request.Request(
+        f"{base_url}/chat/completions",
+        data=json.dumps(
+            {
+                "model": str(config["model"]),
+                "messages": [
+                    {"role": "system", "content": system_prompt(command)},
+                    {"role": "user", "content": user_message_content(prompt, images)},
+                ],
+            }
+        ).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=300) as response:
+            body = response.read().decode("utf-8")
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")
+        fail(
+            "api_http_error",
+            f"Grok provider returned HTTP {error.code}.",
+            detail[:1000],
+        )
+    except urllib.error.URLError as error:
+        fail(
+            "api_request_failed",
+            f"API request failed: {error.reason}",
+            "Check network access or provider configuration.",
+        )
+
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        fail(
+            "invalid_api_response",
+            "Provider returned a response that is not valid JSON.",
+            body[:1000],
+        )
+    content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+    if not content:
+        fail(
+            "empty_api_response",
+            "Provider returned an empty response.",
+            body[:1000],
+        )
+    return normalize_model_output(content, command)
+
+
+def run_grok(
+    command: str,
+    prompt: str,
+    args: argparse.Namespace,
+    out_path: pathlib.Path,
+    config: dict[str, object],
+    images: list[dict[str, object]],
+    files: list[tuple[pathlib.Path, str]],
+    multiple: bool,
+) -> None:
+    _, api_key = read_api_key(config)
+    if not api_key:
+        fail(
+            "not_authorized",
+            "Grok Designer is not authorized.",
+            "Run `grok-designer auth status`. Ask the user to configure authorization outside the agent.",
+        )
+    try:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        fail(
+            "output_dir_failed",
+            f"Could not create output directory: {out_path.parent}",
+            str(error),
+        )
+    content = request_grok(prompt, command, config, api_key, images)
+    content += original_prompt_appendix(command, args, files, images)
+    try:
+        out_path.write_text(content)
+    except OSError as error:
+        fail(
+            "output_write_failed",
+            f"Could not write output file: {out_path}",
+            str(error),
+        )
+    label = f"[{command}]" if multiple else ""
+    print(f"output_path{label}={out_path}")
+    if command in OUTPUT_TYPES:
+        print("integrity=passed")
+
+
+def main(argv: list[str]) -> int:
+    if argv[:1] == ["auth"]:
+        return handle_auth(argv[1:])
+
+    config = load_config()
+    args = parse_args(argv)
+    require_readable_output(args)
+    multiple = len(args.commands) > 1
+    try:
+        max_chars = args.max_chars if args.max_chars is not None else int(config["max_chars"])
+    except (TypeError, ValueError):
+        fail(
+            "invalid_config",
+            "`max_chars` must be an integer.",
+            "Fix ~/.config/grok-designer/config.toml or pass --max-chars.",
+        )
+    images = [read_image(path, config) for path in args.image]
+    output_dir = resolve_path(config["output_dir"])
+    tasks = []
+    for command in args.commands:
+        prompt, files = build_prompt(args, command, max_chars, images)
+        out_path = resolve_output_path(args, command, output_dir, multiple)
+        tasks.append((command, prompt, files, out_path))
+
+    if args.dry_run:
+        for command, prompt, _, out_path in tasks:
+            try:
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                out_path.write_text(prompt)
+            except OSError as error:
+                fail(
+                    "output_write_failed",
+                    f"Could not write dry-run prompt file: {out_path}",
+                    str(error),
+                )
+            label = f"[{command}]" if multiple else ""
+            print(f"prompt_path{label}={out_path}")
+        return 0
+
+    if multiple:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(tasks)) as executor:
+            futures = [
+                executor.submit(
+                    run_grok,
+                    command,
+                    prompt,
+                    args,
+                    out_path,
+                    config,
+                    images,
+                    files,
+                    multiple,
+                )
+                for command, prompt, files, out_path in tasks
+            ]
+            for future in concurrent.futures.as_completed(futures):
+                future.result()
+        return 0
+
+    command, prompt, files, out_path = tasks[0]
+    run_grok(command, prompt, args, out_path, config, images, files, multiple)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

@@ -41,11 +41,11 @@ pres.title = "GOAI 赛道三 · 软件研发全流程协同多Agent系统";
     x: 0.7, y: 2.4, w: 8.6, h: 0.7, fontSize: 32, bold: true, color: C.mint
   });
   // 副标题
-  s.addText("用 AgentTeams 打造一支可验证、可回滚、可沉淀的 PDCA 研发闭环 Agent 团队", {
+  s.addText("用 AgentTeams 打造一支由固定 Leader 编排、可验证、可回滚、可沉淀的 PDCA 研发闭环 Agent 团队", {
     x: 0.7, y: 3.3, w: 8.6, h: 0.5, fontSize: 16, color: C.ice
   });
   // 亮点标签行
-  const tags = ["6 Worker 真实闭环跑通", "7 个工程 Skill", "动态 Agent 团队"];
+  const tags = ["1 Leader + 8 职能一套班子", "21 个工程 Skill", "Leader 编排动态团队"];
   tags.forEach((t, i) => {
     s.addShape(pres.shapes.ROUNDED_RECTANGLE, {
       x: 0.7 + i * 2.05, y: 4.2, w: 1.9, h: 0.45, rectRadius: 0.1,
@@ -90,7 +90,7 @@ pres.title = "GOAI 赛道三 · 软件研发全流程协同多Agent系统";
   s.addText("我们的解法", { x: 5.55, y: 1.72, w: 3.7, h: 0.4, fontSize: 16, bold: true, color: C.mint });
   const sol = [
     "把「缺陷/需求聚合 → 根因定位 → 修复 → 测试验证 → 发布确认 → 复盘沉淀」做成可验证的 PDCA 闭环",
-    "AgentTeams 声明式能力，动态组建「软件研发 Agent 团队」，按项目需求招人/裁员",
+    "固定 Leader 从一套完整班子按阶段挑人编排，员工间可互相通信、各司其职",
     "确定性验证闸门 + 组织记忆 RAG，实现「越跑越懂项目」",
     "天然契合企业 B 端，可复制到任意软件研发组织",
   ];
@@ -143,48 +143,55 @@ pres.title = "GOAI 赛道三 · 软件研发全流程协同多Agent系统";
     s.addText(t[1], { x: x + 0.2, y: 3.92, w: 2.5, h: 0.9, fontSize: 10, color: C.gray, valign: "top" });
   });
 
-  s.addText("动态 Agent 团队：按需招募新职能 Agent / 项目结束移除 Agent / 新 Agent 迅速与既有团队协作出结果", {
+  s.addText("固定 Leader 一套班子：Leader 按阶段从完整班子挑人参与 / 员工间可互相通信 / 通用记忆沉淀", {
     x: 0.55, y: 5.1, w: 9, h: 0.35, fontSize: 11, italic: true, color: C.teal
   });
 })();
 
-// ========== 4. 多 Agent 协同：6 Worker + PDCA（评审 25%）==========
+// ========== 4. 多 Agent 协同：一套班子 + Leader + PDCA（评审 25%）==========
 (() => {
   const s = pres.addSlide();
   s.background = { color: C.off };
   s.addText("多 Agent 协同", { x: 0.55, y: 0.4, w: 3, h: 0.5, fontSize: 28, bold: true, color: C.navy });
-  s.addText("6 个研发职能 Agent + PDCA 里程碑握手协议", { x: 0.55, y: 0.95, w: 6, h: 0.4, fontSize: 15, color: C.teal });
+  s.addText("固定 Leader + 一套完整班子（8 职能）· PDCA 里程碑握手协议", { x: 0.55, y: 0.95, w: 9, h: 0.4, fontSize: 14, color: C.teal });
 
-  // 6 个 Worker 卡片（3x2 网格）
+  // 9 个 Worker 卡片（3x3 网格，Leader 用高亮）
   const workers = [
-    ["缺陷聚合员", "Aggregator", "产品经理 + 缺陷管理", "P 计划"],
-    ["根因定位员", "RootCause", "架构师 · RCA + 影响面", "D 执行"],
-    ["修复工程师", "Fixer", "前后端开发", "D 执行"],
-    ["测试验证员", "Tester", "测试工程师 · 质量门禁", "C 检查"],
-    ["发布确认员", "Releaser", "运维 / DevOps", "A 处置"],
-    ["复盘沉淀员", "Retrospector", "数据分析 + 知识沉淀", "A 处置"],
+    ["团队 Leader", "Leader", "编排者 · 按阶段挑人", "LEADER"],
+    ["产品经理", "Aggregator", "需求聚合 · 规格拆解", "P 计划"],
+    ["架构师", "RootCause", "RCA 根因 + 影响面", "D 分析"],
+    ["前端开发", "Frontend", "UI / 前端实现", "D 编码"],
+    ["后端开发", "Backend", "POST/GET 接口 · 存储", "D 编码"],
+    ["修理工", "Fixer", "缺陷根因修复", "D 修复"],
+    ["测试工程师", "Tester", "质量门禁 · 真实验证", "C 检查"],
+    ["运维/DevOps", "Releaser", "灰度发布 · 回滚", "A 处置"],
+    ["复盘沉淀员", "Retrospector", "经验沉淀 · 知识复用", "A 处置"],
   ];
   workers.forEach((w, i) => {
     const col = i % 3, row = Math.floor(i / 3);
-    const x = 0.55 + col * 3.03, y = 1.5 + row * 1.35;
-    const stageColor = w[3].startsWith("P") ? C.mint : w[3].startsWith("D") ? C.teal : w[3].startsWith("C") ? C.deep : "7C6FD4";
+    const x = 0.55 + col * 3.03, y = 1.5 + row * 1.14;
+    const isLeader = w[3] === "LEADER";
+    const stageColor = isLeader ? "E8A317" : w[3].startsWith("P") ? C.mint : w[3].startsWith("D") ? C.teal : w[3].startsWith("C") ? C.deep : "7C6FD4";
     s.addShape(pres.shapes.ROUNDED_RECTANGLE, {
-      x, y, w: 2.85, h: 1.2, rectRadius: 0.08, fill: { color: C.white },
-      line: { color: "D5DFEA", width: 1 }, shadow: mkShadow()
+      x, y, w: 2.85, h: 1.0, rectRadius: 0.08, fill: { color: isLeader ? "FFF7E6" : C.white },
+      line: { color: isLeader ? "E8A317" : "D5DFEA", width: isLeader ? 1.5 : 1 }, shadow: mkShadow()
     });
     // 阶段色块（左上角）
     s.addShape(pres.shapes.RECTANGLE, { x, y, w: 2.85, h: 0.09, fill: { color: stageColor } });
-    s.addShape(pres.shapes.OVAL, { x: x + 0.15, y: y + 0.22, w: 0.5, h: 0.5, fill: { color: stageColor, transparency: 15 } });
-    s.addText(w[1].charAt(0), { x: x + 0.15, y: y + 0.22, w: 0.5, h: 0.5, fontSize: 18, bold: true, color: C.white, align: "center", valign: "middle" });
-    s.addText(w[0], { x: x + 0.75, y: y + 0.18, w: 1.9, h: 0.3, fontSize: 12.5, bold: true, color: C.navy });
-    s.addText(w[1], { x: x + 0.75, y: y + 0.46, w: 1.9, h: 0.25, fontSize: 9, color: C.teal });
-    s.addText(w[2], { x: x + 0.75, y: y + 0.7, w: 1.3, h: 0.3, fontSize: 8.5, color: C.gray });
-    s.addText(w[3], { x: x + 2.15, y: y + 0.85, w: 0.6, h: 0.25, fontSize: 8.5, bold: true, color: stageColor, align: "center" });
+    s.addShape(pres.shapes.OVAL, { x: x + 0.15, y: y + 0.18, w: 0.46, h: 0.46, fill: { color: stageColor, transparency: 15 } });
+    s.addText(w[1].charAt(0), { x: x + 0.15, y: y + 0.18, w: 0.46, h: 0.46, fontSize: 17, bold: true, color: C.white, align: "center", valign: "middle" });
+    s.addText(w[0], { x: x + 0.72, y: y + 0.14, w: 2.0, h: 0.28, fontSize: 12, bold: true, color: C.navy });
+    s.addText(w[1], { x: x + 0.72, y: y + 0.4, w: 2.0, h: 0.24, fontSize: 8.5, color: C.teal });
+    s.addText(w[2], { x: x + 0.72, y: y + 0.64, w: 2.0, h: 0.3, fontSize: 8.5, color: C.gray });
+    s.addText(w[3], { x: x + 2.25, y: y + 0.7, w: 0.5, h: 0.22, fontSize: 8, bold: true, color: stageColor, align: "center" });
   });
 
-  // 底部里程碑
-  s.addText("里程碑握手：TASK_SPEC_READY → ROOT_CAUSE_FOUND → FIX_APPLIED → TEST_PASSED → RELEASE_OK → RETROSPECT_DONE（跨 Agent 交接，防死锁）", {
-    x: 0.55, y: 5.0, w: 9, h: 0.35, fontSize: 11, italic: true, color: C.teal
+  // 底部里程碑 + 通信
+  s.addText("里程碑握手：TASK_SPEC_READY → ROOT_CAUSE_FOUND → FIX_APPLIED / SITE_READY → TEST_PASSED → RELEASE_OK → RETROSPECT_DONE（跨 Agent 交接，防死锁）", {
+    x: 0.55, y: 5.0, w: 9, h: 0.35, fontSize: 10, italic: true, color: C.teal
+  });
+  s.addText("员工可互相通信（Tester 向 Backend 要开发日志）· 全员挂通用记忆 agent-memory + 团队通信 team-comm", {
+    x: 0.55, y: 5.28, w: 9, h: 0.3, fontSize: 9.5, italic: true, color: C.deep
   });
 })();
 
@@ -266,7 +273,7 @@ pres.title = "GOAI 赛道三 · 软件研发全流程协同多Agent系统";
   const layers = [
     ["L1 基座 Skill", "通用工程基础：repo-context / code-search / git-operations"],
     ["L2 领域 Skill", "研发闭环能力：issue-parsing / root-cause-analysis / impact-analysis / code-gen / test-generation"],
-    ["L3 协同 Skill", "闭环收口：release-gate / retrospective / knowledge-rag / evidence-log"],
+    ["L3 协同 Skill", "闭环收口：release-gate / retrospective / knowledge-rag / evidence-log + agent-memory / team-comm"],
   ];
   layers.forEach((l, i) => {
     const y = 1.5 + i * 0.78;
@@ -300,23 +307,23 @@ pres.title = "GOAI 赛道三 · 软件研发全流程协同多Agent系统";
   });
 })();
 
-// ========== 7. 差异化亮点：动态 Agent 团队 ==========
+// ========== 7. 差异化亮点：一套班子 + Leader 编排 + 成长分 ==========
 (() => {
   const s = pres.addSlide();
   s.background = { color: C.off };
   s.addText("差异化亮点", { x: 0.55, y: 0.4, w: 3, h: 0.5, fontSize: 28, bold: true, color: C.navy });
-  s.addText("「AI 公司」式动态 Agent 团队 + 成员绩效评价", { x: 0.55, y: 0.95, w: 8, h: 0.4, fontSize: 15, color: C.teal });
+  s.addText("「AI 研发团队」式一套完整班子 + 固定 Leader 编排 + 成员绩效评价", { x: 0.55, y: 0.95, w: 9, h: 0.4, fontSize: 14, color: C.teal });
 
-  // 动态团队核心（左）
+  // Leader 编排核心（左）
   s.addShape(pres.shapes.ROUNDED_RECTANGLE, {
     x: 0.55, y: 1.5, w: 5.3, h: 3.0, rectRadius: 0.08, fill: { color: C.navy }, shadow: mkShadow()
   });
-  s.addText("动态组建 / 招人 / 裁员", { x: 0.8, y: 1.65, w: 4.8, h: 0.4, fontSize: 16, bold: true, color: C.mint });
+  s.addText("一套班子 + 固定 Leader 编排", { x: 0.8, y: 1.65, w: 4.8, h: 0.4, fontSize: 16, bold: true, color: C.mint });
   const dyn = [
-    ["按需招募", "新项目缺某职能 → 声明式创建新 Worker（无状态、可销毁）"],
-    ["迅速协作", "新 Agent 通过 mcpServers + skills 立即与既有团队协作出结果"],
-    ["合理裁员", "项目结束 / 角色不需要 → 移除 Worker，团队成本可控"],
-    ["解决痛点", "技术栈和提示词不可能预先写死，广谱开发需动态扩展"],
+    ["固定 Leader", "Leader 按阶段决定挑哪些员工，绝不自写代码，只做编排"],
+    ["员工协作", "员工间可互相通信（Tester→Backend 要日志），各司其职"],
+    ["通用记忆", "每个员工挂 agent-memory 沉淀经验，新任务 Leader 重新挑人"],
+    ["解决痛点", "角色与流程固定，参与人员随项目需求动态编排"],
   ];
   dyn.forEach((d, i) => {
     s.addText([
@@ -350,7 +357,7 @@ pres.title = "GOAI 赛道三 · 软件研发全流程协同多Agent系统";
   s.addText("研究依据：AgentInit / AgentVerse / MetaGPT / ChatDev / CoMAS 等（已核实的 arXiv 引用）", {
     x: 0.55, y: 4.7, w: 9, h: 0.35, fontSize: 11, italic: true, color: C.teal
   });
-  s.addText("确定性状态机 · 确定性验证闸门 · 上下文工程 · 成员评价（含知识复用成长分）—— 官方缺失的差异价值，已嵌入官方框架", {
+  s.addText("确定性状态机 · 确定性验证闸门 · 上下文工程 · 成员评价（含知识复用成长分）· 员工通信 —— 官方缺失的差异价值，已嵌入官方框架", {
     x: 0.55, y: 5.05, w: 9, h: 0.35, fontSize: 11, italic: true, color: C.teal
   });
 })();
@@ -360,20 +367,21 @@ pres.title = "GOAI 赛道三 · 软件研发全流程协同多Agent系统";
   const s = pres.addSlide();
   s.background = { color: C.navy };
   s.addText("工程落地 · 真实闭环实测", { x: 0.55, y: 0.4, w: 5, h: 0.5, fontSize: 28, bold: true, color: C.white });
-  s.addText("在官方 AgentTeams 平台真实驱动 6 Worker 跑通完整 PDCA 闭环（不是 mock）", { x: 0.55, y: 0.95, w: 8, h: 0.4, fontSize: 15, color: C.ice });
+  s.addText("在官方 AgentTeams 平台真实驱动一套班子跑通完整 PDCA 闭环（不是 mock）", { x: 0.55, y: 0.95, w: 8, h: 0.4, fontSize: 15, color: C.ice });
 
   // 左侧：里程碑时间线（真实数据）
   s.addText("闭环里程碑时间线（真实测量）", { x: 0.55, y: 1.5, w: 5, h: 0.35, fontSize: 14, bold: true, color: C.mint });
   const tl = [
+    ["0s", "任务派发", "leader 编排", "LEADER"],
     ["0s", "TASK_SPEC_READY", "aggregator", "P 计划"],
-    ["0s", "ROOT_CAUSE_FOUND", "rootcause", "D 执行"],
+    ["0s", "ROOT_CAUSE_FOUND", "rootcause", "D 分析"],
     ["0-45s", "FIX_APPLIED", "fixer · 10/10 测试", "D 执行"],
     ["0-45s", "TEST_PASSED", "tester", "C 检查"],
     ["60s", "RELEASE_OK", "releaser", "A 处置"],
     ["181s", "RETROSPECT_DONE", "retrospector", "A 处置 · 闭合"],
   ];
   tl.forEach((t, i) => {
-    const y = 1.95 + i * 0.5;
+    const y = 1.82 + i * 0.42;
     s.addShape(pres.shapes.OVAL, { x: 0.7, y: y + 0.03, w: 0.22, h: 0.22, fill: { color: C.mint } });
     s.addText(t[0], { x: 0.62, y, w: 1.0, h: 0.28, fontSize: 9, bold: true, color: C.mint, align: "center" });
     s.addText(t[1], { x: 1.7, y, w: 2.5, h: 0.28, fontSize: 11, bold: true, color: C.white });
@@ -389,7 +397,7 @@ pres.title = "GOAI 赛道三 · 软件研发全流程协同多Agent系统";
     ["181s", "完整闭环闭合"],
     ["10/10", "自动化测试通过"],
     ["400", "空用户名（不再 500）"],
-    ["6", "Worker 真实接力"],
+    ["9", "一套班子（1 Leader + 8 职能）"],
   ];
   results.forEach((r, i) => {
     const y = 2.15 + i * 0.68;
@@ -415,9 +423,9 @@ pres.title = "GOAI 赛道三 · 软件研发全流程协同多Agent系统";
 
   const rows = [
     ["L3 · 平台集成", "AgentTeams（agt CLI + Matrix 房间协议）· Human 介入审批 · 沙箱", C.navy, C.mint],
-    ["L2 · 标准接口层", "AgentTeamsLoop 调度引擎 · AgentInterface · AgentBus/EventBus · 6 Worker", C.deep, C.white],
-    ["L1 · 调度核心升级", "IterativeWorker 迭代 · 动态预算分配 · 语义记忆检索 · 异步并行派单", C.teal, C.white],
-    ["共享协议层", "state.py 确定性状态机 · evaluation.py 评价 · knowledge_tracker.py 知识复用统计 · context.py 上下文", C.off, C.navy],
+    ["L2 · 标准接口层", "AgentTeamsLoop 调度引擎 · AgentInterface · AgentBus/EventBus · 一套班子（1 Leader + 8 职能）", C.deep, C.white],
+    ["L1 · 调度核心升级", "Leader 编排 · 员工间通信(team-comm) · 通用记忆(agent-memory) · 异步并行派单", C.teal, C.white],
+    ["共享协议层", "state.py 确定性状态机 · evaluation.py 评价(含成长分) · knowledge_tracker.py 知识复用统计 · context.py 上下文", C.off, C.navy],
   ];
   rows.forEach((r, i) => {
     const y = 1.45 + i * 0.95;
@@ -448,8 +456,8 @@ pres.title = "GOAI 赛道三 · 软件研发全流程协同多Agent系统";
   s.addText("一个能真实跑通的", { x: 0.7, y: 1.5, w: 8.6, h: 0.6, fontSize: 30, color: C.ice, align: "center" });
   s.addText("软件研发多 Agent 团队", { x: 0.7, y: 2.15, w: 8.6, h: 0.8, fontSize: 42, bold: true, color: C.mint, align: "center" });
 
-  s.addText("以 AgentTeams 为唯一协同基点 · 覆盖官方 8 环节闭环 · 6 Worker 真实跑通 · 确定性可验证 · 知识可沉淀", {
-    x: 0.7, y: 3.4, w: 8.6, h: 0.5, fontSize: 14, color: C.white, align: "center"
+  s.addText("以 AgentTeams 为唯一协同基点 · 覆盖官方 8 环节闭环 · Leader + 一套班子真实跑通 · 确定性可验证 · 知识可沉淀", {
+    x: 0.7, y: 3.4, w: 8.6, h: 0.5, fontSize: 13, color: C.white, align: "center"
   });
 
   // 开源计划

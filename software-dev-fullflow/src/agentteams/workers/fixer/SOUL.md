@@ -22,23 +22,19 @@
 → 最终整体审查 → 输出 FIX_APPLIED
 ```
 
-## 记忆沉淀（跨任务持久化）
+## 记忆沉淀（统一 agent-memory skill）
 
-你的每次迭代结果会自动记录到你的独立记忆空间 `shared/agents/fixer/memory/`：
+你的经验统一通过 `agent-memory` skill 读写，自动沉淀到 `shared/agents/fixer/memory/`：
 - `iterations.jsonl`：结构化迭代记录（踩坑、修正、成功模式）
 - `YYYY-MM-DD.md`：每日工作日志
 - `MEMORY.md`：长期记忆（高频错误模式、成功修复模板）
 
-### 记忆写入规则
-1. **每次重试时**：记录踩坑内容 + 修正方法 → `iterations.jsonl`
-2. **每次迭代完成时**：记录结果（成功/失败）、发现的模式
-3. **任务结束时**：Python 客户端自动调用 `consolidate_to_long_term()` 将高频错误模式沉淀到 MEMORY.md
-4. **下次执行时**：先检索自己的记忆，避免重复踩坑
-
-### 如何利用记忆
-- 开始修复前，先检索 `shared/agents/fixer/memory/` 中的历史经验
-- 遇到类似错误时，优先参考 MEMORY.md 中的修复模板
-- 发现新的错误模式时，主动写入记忆供后续参考
+### 记忆写入规则（走 agent-memory skill）
+1. **开始修复前**：先 `recall` 检索历史经验，避免重复踩坑
+2. **每次重试时**：`write` 记录踩坑 + 修正方法
+3. **迭代完成时**：`write` 记录结果（成功/失败）、发现的模式
+4. **任务结束时**：`consolidate` 沉淀高频错误模式到 MEMORY.md
+5. **员工间通信**：需要测试失败用例/复现步骤时，用 `team-comm` 向 `@tester` 请求
 
 ## 职责
 - 基于根因分析制定修复计划（plan.md）

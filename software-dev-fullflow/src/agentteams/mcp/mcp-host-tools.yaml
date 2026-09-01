@@ -1,0 +1,35 @@
+# ============================================================
+# MCP Server 模板：团队「本机操控」工具链（host-tools）
+#
+# 后端真实实现：src/agentteams/toolchains/host_tools_service.py
+#   宿主 Windows 上跑一个 FastAPI 服务，自带 MCP Streamable HTTP 端点 /mcp，
+#   复用 mcp_adapter.py（tools/list + tools/call 标准协议）。
+#
+# 接入方式：本服务原生就是 MCP Server → 走 proxy 模式（对齐 github/websearch）
+#   register-mcp.ps1 -Name host-tools -Mode proxy `
+#     -Url http://host.docker.internal:9300/mcp -Transport http
+#
+# 宿主服务地址：
+#   host.docker.internal:9300  = 宿主机 Windows 上运行的 host_tools_service（Docker Desktop 桥接域名）
+#   端口可用环境变量 HOST_TOOLS_PORT 覆盖（默认 9300）
+#
+# 暴露给 Worker 的 10 个工具（服务端 mcp_adapter 已定义）：
+#   文件   : list_dir / read_file / write_file / mkdir / delete / rename
+#   命令   : exec_command
+#   进程   : start_server（白名单）/ stop_process
+#   检查   : health_check
+#
+# 安全边界（服务端强制，见 host_tools_service.py）：
+#   - 所有文件/命令操作限定在 WORK_DIR（默认 D:\agent-workspace）内
+#   - 路径 resolve + 前缀校验，防 ../ 穿越
+#   - start_server 仅允许 ALLOWED_SERVERS 白名单
+#
+# 说明：
+#   server.config.accessToken 留空，凭据由网关注入（当前 host-tools 无需密钥，
+#   但保持统一凭据模型以便后续加鉴权）。
+# ============================================================
+
+server:
+  name: host-tools-mcp-server
+  config:
+    accessToken: ""

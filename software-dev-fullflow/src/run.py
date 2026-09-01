@@ -42,6 +42,10 @@ from loop.agentteams_loop import AgentTeamsLoop  # noqa: E402
 from loop.dashboard import create_dashboard  # noqa: E402
 from loop.web_dashboard import WebDashboard  # noqa: E402
 from loop.evaluation import score_team, governance_action  # noqa: E402
+from loop.config import load_dotenv  # noqa: E402
+
+# 统一配置：最早注入根目录 .env（幂等），使 AGT_* / MAX_DELEGATE_ROUNDS 等可被覆盖。
+load_dotenv()
 
 # 默认工作目录：src/data/（运行产物，gitignore）
 DEFAULT_DATA_DIR = Path(__file__).resolve().parent / "data"
@@ -235,6 +239,15 @@ async def main() -> None:
     interactive = "--interactive" in args
     args = [a for a in args if a != "--interactive"]
 
+    # GAP-25: --task-id <id> —— 跨进程断点续跑时指定同一 task_id
+    #   （loop 层凭 delegation.json 复用同一平台任务 + client checkpoint 从断点恢复）
+    resume_task_id: str | None = None
+    if "--task-id" in args:
+        i = args.index("--task-id")
+        if i + 1 < len(args):
+            resume_task_id = args[i + 1]
+            args = args[:i] + args[i + 2:]
+
     # ── 任务输入 ──
     if args:
         spec = " ".join(args)
@@ -261,7 +274,8 @@ async def main() -> None:
             return
 
     # ── 创建 Loop ──
-    task_id = uuid.uuid4().hex[:8]
+    # GAP-25: 指定 --task-id 时复用（续跑同一任务）；否则生成新 ID
+    task_id = resume_task_id or uuid.uuid4().hex[:8]
     workdir = DEFAULT_DATA_DIR
     t0 = datetime.now(timezone.utc)
 

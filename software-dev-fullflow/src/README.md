@@ -4,7 +4,7 @@
 > **落地为可运行代码**（PLAN 第 7 项）。
 >
 > 运行底座：**AgentTeams 官方框架**（阿里开源，比赛协同基点）+ **DeepSeek**（OpenAI 兼容协议）。
-> 完整 PDCA 闭环已在真实平台实测通过（Matrix 留痕）。**115 例确定性测试 ALL PASS**。
+> 完整 PDCA 闭环已在真实平台实测通过（Matrix 留痕）。**199 例确定性测试 ALL PASS**。
 
 ## 初赛交付状态（2026-08-15）
 
@@ -13,27 +13,29 @@
 | Mock 完整闭环（6/6 里程碑 + RETROSPECT_DONE） | `demo/e2e-log-20260815-final.txt` |
 | 真实平台部分闭环（3/6 里程碑 LLM 驱动） | 同上 + `src/AGENTTEAMS-MIGRATION.md` §八 |
 | 委托模式降级（平台不可用 → 自动 fallback Mock） | `tests/test_delegated_fallback.py`（3 PASS） |
-| 动态团队治理（招人/裁员闭环） | `tests/test_e2e_dynamic_hiring.py`（8 PASS） |
+| 动态团队治理（招人/裁员闭环） | `tests/test_e2e_dynamic_hiring.py`（15 PASS） |
 | 团队建站能力（MBTI 测评网站） | `demo/mbti-site-e2e-*/`（2 批验证） |
 | LoongSuite 推理轨迹观测 | `scripts/verify-loongsuite-traces.py`（PASS） |
 | UModel 统一数据模型 | `scripts/verify-umodel-model.py`（PASS） |
-| Team + Leader 两级组织 | `agt get teams` 确认 Active（1 Leader + 6 Worker） |
+| Team + Leader 两级组织 | `agt get teams` 确认 Active（1 Leader + 8 Worker） |
 
 ## 这是什么
 
-一个 **AgentTeams 原生调度 Loop**，驱动 6+1 个研发 Worker 接力完成 PDCA 闭环：
+一个 **AgentTeams 原生调度 Loop**，驱动 9 个研发 Worker（1 Leader + 8 职能）接力完成 PDCA 闭环：
 
-- **delegated（委托）**：任务发给 AgentTeams 官方 Manager，由 Manager 自动驱动 6 Worker 接力（Matrix 留痕，推荐）
+- **delegated（委托）**：任务发给 AgentTeams 官方 Manager，由 Manager 自动驱动 Worker 接力（Matrix 留痕，推荐）
 - **mock（模拟）**：本地秒级演示完整闭环，不调 API，用于快速验证与自检
-- **Team + Leader 两级协作**：6 Worker 组织进 `rnd-team`（Team CR），由 `team-leader` 在 Team Room 内协调（2026-08-15 落地）
+- **Team + Leader 两级协作**：8 Worker 组织进 `rnd-team`（Team CR），由 `leader` 在 Team Room 内协调（2026-08-16 重构）
 
-**6 个研发 Worker**（映射真实研发团队，身份来源见 `agents/AGENT-IDENTITY.md` → `src/agentteams/workers/<name>/SOUL.md` → `workers.yaml`）：
+**8 个研发 Worker**（映射真实研发团队，身份来源见 `agents/AGENT-IDENTITY.md` → `src/agentteams/workers/<name>/SOUL.md` → `workers.yaml`）：
 
 | Worker | 真实角色 | 里程碑 |
 |--------|---------|--------|
 | aggregator 缺陷聚合员 | 产品经理+缺陷管理 | TASK_SPEC_READY |
 | rootcause 根因定位员 | 架构师(RCA+影响面) | ROOT_CAUSE_FOUND |
-| fixer 修复工程师 | 前后端开发 | FIX_APPLIED |
+| frontend 前端开发 | 前端工程师 | SITE_READY |
+| backend 后端开发 | 后端工程师 | BACKEND_READY |
+| fixer 修复工程师 | 开发工程师(缺陷修复) | FIX_APPLIED |
 | tester 测试验证员 | 测试(质量门禁) | TEST_PASSED |
 | releaser 发布确认员 | 运维/DevOps(灰度+回滚) | RELEASE_OK |
 | retrospector 复盘沉淀员 | 数据分析+知识沉淀 | RETROSPECT_DONE |
@@ -88,8 +90,8 @@ src/
 │   └── test_context_with_api.py  ← 上下文工程 API 测试
 │
 ├── agentteams/               ← AgentTeams 声明式资源
-│   ├── workers.yaml              ← 6 Worker CRD 声明
-│   ├── team-rnd.yaml             ← Team CR（1 Leader + 6 Worker）
+│   ├── workers.yaml              ← 9 Worker CRD 声明
+│   ├── team-rnd.yaml             ← Team CR（1 Leader + 8 Worker）
 │   ├── team-leader.yaml          ← Leader Worker CR
 │   ├── security-config.json      ← 安全守卫配置
 │   ├── SECURITY-POLICY.md        ← 安全策略说明
@@ -132,15 +134,31 @@ cd software-dev-fullflow\src
 ..\demo\.venv\Scripts\python.exe -m pytest tests/ -q
 ```
 
-## 环境变量（连接 AgentTeams 平台）
+## 环境变量（统一配置，GAP-29）
+
+所有运行配置统一收敛到项目根目录 `.env`（模板 `.env.example`）。复制模板并按需填敏感字段即可：
 
 ```
-AGENTTEAMS_MATRIX_URL        (默认 http://127.0.0.1:18080)
-AGENTTEAMS_MATRIX_DOMAIN     (默认 matrix-local.agentteams.io:18080)
-AGENTTEAMS_ADMIN_USER        (默认 admin)
-AGENTTEAMS_ADMIN_PASSWORD    (必填，本项目 AgentTeams2026!)
-AGENTTEAMS_MANAGER_USER      (默认 manager)
+copy ..\.env.example ..\.env
 ```
+
+Python 侧（`run.py` / `AgentTeamsClient` / `AgentTeamsLoop`）在入口自动读取 `.env`；
+`reinstall-agentteams.ps1` / `entry-cli.ps1` 同样从 `.env` 读取。读取优先级：
+**真实环境变量 > .env > 代码内置默认值**。
+
+涵盖的变量（完整清单见 `.env.example`）：
+
+| 分组 | 变量 | 说明 |
+|------|------|------|
+| 平台连接 | `AGT_MODE` / `AGT_CONTROLLER` / `AGT_CONTROLLER_API` | docker/local、容器名、REST 地址 |
+| Matrix | `AGENTTEAMS_MATRIX_URL` / `AGENTTEAMS_MATRIX_DOMAIN` | 协议网关地址与域 |
+| 账号 | `AGENTTEAMS_ADMIN_USER` / `AGENTTEAMS_ADMIN_PASSWORD` / `AGENTTEAMS_MANAGER_USER` | 管理后台/Manager（密码留空由安装脚本生成） |
+| 认证 token | `AGENTTEAMS_AUTH_TOKEN` / `AGENTTEAMS_AUTH_TOKEN_FILE` | Controller REST 认证 |
+| Loop 行为 | `MAX_DELEGATE_ROUNDS` / `APPROVAL_TTL_SECS` / `APPROVAL_WAIT` | 续跑预算/审批 TTL/等待开关 |
+| 部署/LLM | `AGENTTEAMS_DEFAULT_MODEL` / `AGENTTEAMS_OPENAI_BASE_URL` / `AGENTTEAMS_LLM_API_KEY` / `DEEPSEEK_API_KEY` 等 | 平台默认模型与 LLM Key |
+
+> 敏感字段（密码 / token / API key）在模板中一律留空，注释说明来源；`.env` 已被
+> `.gitignore` 忽略，不会提交。
 
 ## 输出
 

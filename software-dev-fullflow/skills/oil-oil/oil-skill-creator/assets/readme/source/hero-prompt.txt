@@ -1,0 +1,11 @@
+Use case: illustration-story
+Asset type: transparent cutout illustration integrated into the right half of a GitHub README hero
+Input image: the provided character turnaround is the primary identity reference for both recurring characters
+Primary request: depict the workflow of writing an Agent Skill with product thinking: clarify its value, design a reliable flow, and verify the result
+Subject and action: in one wide editorial scene, the glasses stick-figure creator works at a long, slightly diagonal drafting table. A large blueprint is assembled from three visibly different physical layers: a target-and-user layer, a connected workflow layer, and an evidence layer with a bold checkmark and comparison marks. The creator uses a ruler and moves one modular sheet into the workflow. The warm-yellow Border Collie holds down the far corner of the blueprint with one paw and watches the work.
+Visual evidence: the three layers must read as parts of one product blueprint, with clear physical connections and one finished checked result; use icons and geometry only, never words
+Style/medium: professional editorial manga/comic ink illustration matching the reference sheet; confident black outlines with varied line weight; restrained circular halftone; warm yellow only on the dog and sparse success accents; slightly denser and more tactile than a simple icon
+Composition/framing: wide 3:2 composition, energetic diagonal from lower left to upper right, designed to fill the right 55 percent of a 1200 × 420 hero; character near center-left of the illustration and facing inward; blueprint and dog extend toward the right; generous but not excessive outer padding; all glasses, pupils, limbs, dog ears, paws and tail visible
+Background: perfectly uniform flat #00FF00 rectangle with zero gradient, texture, noise, speckles, floor, reflection, lighting variation, or shadow
+Constraints: preserve the exact reference identities and proportions; solid-black pupils must remain visible; no text, letters, numbers, logos, watermark, computer screen, dashboard, UI card grid, white enclosing panel, or outer frame; no object may touch the image border; do not use green anywhere on subjects or props
+Avoid: generic warehouse shelves, realistic human anatomy, chibi redesign, photorealism, 3D, glossy gradients, decorative clutter, tiny loose objects

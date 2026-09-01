@@ -27,6 +27,8 @@ class MessageType(str, Enum):
     TASK_HANDOFF = "TASK_HANDOFF"      # 任务交接：Worker A → Worker B
     FEEDBACK = "FEEDBACK"              # 反馈：下游 Worker 对上游产物的反馈
     QUERY = "QUERY"                    # 查询：Worker 向上游请求补充信息
+    REQUEST = "REQUEST"                # 定向请求/应答：Tester → Backend 要开发日志
+    REPLY = "REPLY"                    # 应答：回应某条 REQUEST（带 request_id）
     ALERT = "ALERT"                    # 告警：异常/超时/质量不达标
 
 
@@ -71,8 +73,19 @@ class AgentBus:
         msgs = bus.receive("tester")           # tester 收取消息
     """
 
-    # PDCA 流水线默认授权（上下游）
-    PDCA_PIPELINE = ["aggregator", "rootcause", "fixer", "tester", "releaser", "retrospector"]
+    # PDCA 流水线默认授权（一套完整班子，2026-08-16 重构）
+    PDCA_PIPELINE = ["aggregator", "rootcause", "frontend", "backend",
+                     "fixer", "tester", "releaser", "retrospector"]
+
+    # 员工间横向协作授权（C3 协作矩阵：测试可向后端要日志等）
+    # 每对均双向授权，覆盖 request/reply 两个方向
+    PEER_COLLABORATIONS = [
+        ("tester", "backend"),      # 测试要后端开发日志/接口说明
+        ("tester", "frontend"),     # 测试要前端实现细节
+        ("tester", "fixer"),        # 测试要修复复现步骤/失败用例
+        ("frontend", "backend"),    # 前端要后端接口契约
+        ("fixer", "tester"),        # 修理工要测试失败用例
+    ]
 
     def __init__(self):
         self._subscriptions: dict[str, list[AgentMessage]] = defaultdict(list)
@@ -80,13 +93,17 @@ class AgentBus:
         self._history: list[dict[str, Any]] = []
         self._msg_counter = 0
 
-        # 默认授权：PDCA 上下游
+        # 默认授权：PDCA 上下游（一套班子流水线）
         for i in range(len(self.PDCA_PIPELINE) - 1):
             self.authorize(self.PDCA_PIPELINE[i], self.PDCA_PIPELINE[i + 1])
-        # manager ↔ all
+        # leader ↔ all（Leader 固定编排者，与所有员工双向）
         for w in self.PDCA_PIPELINE:
-            self.authorize("manager", w)
-            self.authorize(w, "manager")
+            self.authorize("leader", w)
+            self.authorize(w, "leader")
+        # 员工间横向协作（双向授权，支持 request/reply）
+        for a, b in self.PEER_COLLABORATIONS:
+            self.authorize(a, b)
+            self.authorize(b, a)
 
     # ---- 授权管理 ----
 
@@ -173,6 +190,53 @@ class AgentBus:
             sender=sender, receiver=receiver,
             content=alert_text, task_id=task_id,
         ))
+
+    def request(self, sender: str, receiver: str, task_id: str, request_text: str,
+                kind: str = "") -> str:
+        """发送定向请求，返回 request_id（供接收方 reply 时引用）。
+
+        员工间通信统一入口（如 Tester → Backend 要开发日志）。
+        返回 "" 表示发送失败（未授权）。
+        """
+        self._msg_counter += 1
+        request_id = f"req-{self._msg_counter}"
+        ok = self.publish(AgentMessage(
+            msg_id=f"request-{self._msg_counter}",
+            msg_type=MessageType.REQUEST,
+            sender=sender, receiver=receiver,
+            content=request_text, task_id=task_id,
+            metadata={"request_id": request_id, "kind": kind},
+        ))
+        return request_id if ok else ""
+
+    def reply(self, sender: str, receiver: str, task_id: str,
+              request_id: str, reply_text: str) -> bool:
+        """应答某条定向请求（通过 request_id 关联）。"""
+        self._msg_counter += 1
+        return self.publish(AgentMessage(
+            msg_id=f"reply-{self._msg_counter}",
+            msg_type=MessageType.REPLY,
+            sender=sender, receiver=receiver,
+            content=reply_text, task_id=task_id,
+            metadata={"request_id": request_id},
+        ))
+
+    def get_requests_for(self, worker: str) -> list[AgentMessage]:
+        """收取指定 Worker 的所有未处理的定向请求（REQUEST 类型，不消费）。"""
+        return [m for m in self._subscriptions.get(worker, [])
+                if m.msg_type == MessageType.REQUEST]
+
+    def find_request(self, request_id: str) -> AgentMessage | None:
+        """按 request_id 在历史中找到对应的 REQUEST 消息。"""
+        for h in self._history:
+            if h.get("msg_type") == "REQUEST" and h.get("metadata", {}).get("request_id") == request_id:
+                return AgentMessage(
+                    msg_id=h["msg_id"], msg_type=MessageType.REQUEST,
+                    sender=h["sender"], receiver=h["receiver"],
+                    content=h["content"], task_id=h["task_id"],
+                    metadata=h["metadata"],
+                )
+        return None
 
     # ---- 查询 ----
 

@@ -84,6 +84,31 @@
 | `repo-context` | 仓库结构感知：模块/依赖图/变更范围 | root-cause, impact, code-gen |
 | `knowledge-rag` | 知识库检索/写入：经验教训、已修复缺陷 | issue-parsing, root-cause, retrospective |
 | `evidence-log` | 执行证据沉淀：Trace/Log/报告落盘可审计 | 全部 |
+| `doc-gen` | 文档生成：Markdown/HTML → Word(.docx)/PDF，中文字体/表格/代码块/页码 | Leader, Aggregator, RootCause, Tester, Releaser, Retrospector |
+| `doc-management` | 文档任务全生命周期状态机：多阶段推进 + 执行/验收分离（done ≠ accepted）+ 断点恢复。触发：文档管理、评审、验收、定稿、归档、长文档 | DocManager（引用 `vendor/aris/run_state.py`） |
+| `evidence-check` | 确定性证据预检：验收前机械校验被引用的证据真实存在（路径+数字/字符串在源里），零模型、fail-closed。触发：证据、预检、验证报告、验收 | Tester（验收前）、Releaser（发布前）、DocManager（定稿前） |
+| `injection-scan` | 上下文注入扫描：对第三方内容做 regex 威胁扫描（prompt 注入/外泄/C2），命中隔离。触发：注入、威胁、扫描、污染 | Aggregator（外部需求/抓取入库前） |
+| `stall-detection` | 停滞检测：每轮记录新发现数，连续 0 发现 → 结构性转向/上报人类。触发：停滞、卡住、无进展、转向 | Leader（每轮编排） |
+| `review-gate` | 跨模型评审路由裁决表：同族评审不能终结验收，仅跨族正向才 accepted，卡住 escalate。触发：评审、裁决、跨模型、accepted | Tester、Releaser（验收裁决） |
+| `evidence-integrity` | 验收数据可信度准则（ARIS 协议）：禁伪造 ground truth / 归一化造假 / 幽灵结果，done ≠ accepted。触发：完整性、造假、可信度、验收准则 | Leader、Releaser、Tester（验收准则） |
+| `dispatch-contract` | 派发契约化（借鉴 oil-oil codex-team-mode）：派发包七要素模板 + 派发哨兵 fail-closed（缺验收标准即拒）+ 独立复审包协议 + 角色-模型映射。触发：派发、派单、切片、契约、哨兵、dispatch、brief、复审包、路由、协调 | Coordinator（协同路由员，派发前必经哨兵） |
+
+---
+
+## 三·B、外部 Skill 归档区（oil-oil 参考库，2026-09-01 新增）
+
+> 归档 GitHub 用户 **oil-oil** 的 29 个原创 Skill 至 `skills/oil-oil/`（按项目形式：目录 + `SKILL.md` + 可选 scripts/references/assets）。**不挂载任何 Worker**，仅作外部参考与理念借鉴。清单、frontmatter name 映射与借鉴建议见 `skills/oil-oil/README.md`；人物调查见 `references/oil-oil/INVESTIGATION.md`。
+
+代表性借鉴候选：
+
+| 归档目录 | frontmatter name | 潜在借鉴点 |
+|---|---|---|
+| `oil-oil/codex-team-mode` | `team-mode` | 多 Agent 派发/协作（已借鉴出 `dispatch-contract`） |
+| `oil-oil/oil-skill-creator` | `oil-skill-creator` | Skill 工程方法论 → 完善 `manage-skill` |
+| `oil-oil/git-ship` | `git-ship` | 分支/PR/发布一键流 → 简化 `release-gate` |
+| `oil-oil/html-doc` | `html-doc` | 视觉优先文档 → 借鉴 `doc-gen` HTML 中间层 |
+| `oil-oil/oil-tone` | `oil-tone` | 文案文风规范 → 团队报告/复盘表达 |
+| `oil-oil/react-flow-advanced-best-practices` | `react-flow-advanced-best-practices` | 关系图/流程图前端 → UModel 可视化 |
 
 ---
 
@@ -126,10 +151,12 @@
 - 调研依据：`references/theory/SKILL-REGISTRY-RESEARCH.md`
 - 动态生命周期设计：`design/SKILL-LIFECYCLE.md`
 - Skill 清单主文档：`skills/SKILL-LIST.md`
+- 外部 Skill 归档区（oil-oil 参考库）：`skills/oil-oil/README.md`
 - 各 Skill 正文：`skills/<name>/SKILL.md`
 - 比赛官方 Skill 手册：`skills/README.md`
 - Skill → Worker 分配真相源：`skills/ASSIGNMENT-MATRIX.md`
 - 官方管理脚本：`skills/scripts/`（`push-worker-skills.sh` / `render-skills.sh` / `agentteams-find-skill.sh`）
+- 引入的 ARIS 长时间工作管理模块（原封不动）：`vendor/aris/README.md`
 - L0 元 Skill（编排）：`skills/manage-skill/SKILL.md`
 - 官方 AgentTeams 源码：`references/refs/agent-teams/`
 

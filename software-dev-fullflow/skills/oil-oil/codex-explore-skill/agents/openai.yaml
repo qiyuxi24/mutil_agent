@@ -1,0 +1,4 @@
+interface:
+  display_name: "Explore"
+  short_description: "Delegate large code reading to explorer agents"
+  default_prompt: "Use $explore to map this codebase before making changes."

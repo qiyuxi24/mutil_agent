@@ -215,3 +215,159 @@ class TestRatingBoundary:
         assert governance_action("x", "Qualified") == "retain"
         assert governance_action("x", "Underperforming") == "coach"
         assert governance_action("x", "Unqualified") == "demote_or_fire"
+
+
+# ========================================================================== #
+# 阶段 B/E：Leader 从「一套完整班子」按阶段挑人 + 收尾沉淀
+# 叙事核心卖点：Leader（固定编排者）从一套班子里挑人参与，能力不足时动态 hire，
+#               项目结束 → 收尾归档（临时角色回收，经验沉淀）。
+# 只依赖确定性逻辑，不依赖 AgentTeams 真实平台（复赛环境再 apply 真实 CR）。
+# 2026-08-16 重构：不再有「修复/搭建」双模式，统一一套班子 + Leader 挑人。
+# ========================================================================== #
+
+# 一套完整班子（固定成员；能力不足时 Leader 可临时 hire 补充）
+TEAM_ROSTER = ["aggregator", "rootcause", "frontend", "backend",
+               "fixer", "tester", "releaser", "retrospector"]
+# 常驻核心（Leader 与班子常驻成员，项目结束保留）
+CORE_TEAM = set(TEAM_ROSTER) | {"leader"}
+
+
+def leader_plan_team(task_spec: str, worker_pool: list[str]) -> dict:
+    """Leader 的任务解析 + 按阶段挑人（对齐 skills/team-comm 与一套班子）。
+
+    依据任务关键词判断需要的角色（不再区分修复/搭建双模式）：
+      - 需要服务器接口（POST/服务器/接口/数据库） → 挑 backend
+      - 需要页面/前端（页面/官网/UI/前端/界面）   → 挑 frontend
+      - 需要从零实现（搭/建/做/实现/新项目）       → 挑 rootcause + frontend + backend
+      - 默认都含：aggregator + tester + releaser + retrospector（PDCA 闭环必需）
+
+    返回：{team(成员名单), new_workers(需 hire 的角色), leader}。
+    已存在的角色直接复用；worker_pool 中没有的角色记入 new_workers 由 Leader hire。
+    """
+    spec = task_spec or ""
+    backend_hint = any(k in spec for k in ("POST", "服务器", "接口", "数据库", "后端"))
+    frontend_hint = any(k in spec for k in ("页面", "官网", "UI", "前端", "界面", "网站", "建", "搭"))
+    greenfield_hint = any(k in spec for k in ("搭", "建", "从零", "新项目", "做", "实现"))
+
+    team = ["aggregator", "tester", "releaser", "retrospector"]  # PDCA 闭环必需
+    if backend_hint:
+        team.append("backend")
+    if frontend_hint or greenfield_hint:
+        team.append("frontend")
+    if greenfield_hint or not backend_hint:
+        team.append("rootcause")
+    if "FIX" in spec.upper() or "修复" in spec or "缺陷" in spec:
+        team.append("fixer")
+
+    # 去重保序
+    seen = set()
+    team = [r for r in team if not (r in seen or seen.add(r))]
+
+    # 需要动态 hire 的角色 = 团队需要但 worker 池缺失
+    new_workers = [r for r in team if r not in worker_pool]
+    return {"team": team, "new_workers": new_workers, "leader": "leader"}
+
+
+def leader_project_archive(project: dict, knowledge: list[str]) -> dict:
+    """Leader 项目收尾：临时角色回收 + 经验归档（对齐 agent-memory 的沉淀）。
+
+    语义：
+      - 把各成员经验写入知识库（append，防丢组织记忆）
+      - 项目结束按需回收临时招入角色（fire），常驻班子保留
+    返回：{archived_members, fired, retained, knowledge_added}。
+    """
+    archived = list(project["team"])
+    fired = [r for r in project["team"] if r not in CORE_TEAM]
+    retained = [r for r in project["team"] if r in CORE_TEAM]
+
+    knowledge_added = []
+    for role in archived:
+        entry = f"[{role}] 项目 '{project['name']}' 经验沉淀（agent-memory）"
+        knowledge.append(entry)
+        knowledge_added.append(entry)
+
+    return {
+        "archived_members": archived,
+        "fired": fired,
+        "retained": retained,
+        "knowledge_added": knowledge_added,
+    }
+
+
+class TestLeaderTeamLifecycle:
+    def test_backend_task_picks_backend(self):
+        """含服务器接口的任务 → Leader 挑 backend（需要后端能力）。"""
+        pool = list(TEAM_ROSTER)          # worker 池缺 backend
+        pool.remove("backend")
+        plan = leader_plan_team("实现一个带 POST 接口的官网", pool)
+        assert "backend" in plan["team"]
+        assert "backend" in plan["new_workers"]  # 缺后端需 hire
+        assert plan["leader"] == "leader"
+
+    def test_frontend_task_picks_frontend(self):
+        """含页面/前端的任务 → Leader 挑 frontend。"""
+        pool = list(TEAM_ROSTER)
+        pool.remove("frontend")
+        plan = leader_plan_team("做一个静态活动页面", pool)
+        assert "frontend" in plan["team"]
+        assert "frontend" in plan["new_workers"]
+
+    def test_pdca_closure_always_in_team(self):
+        """无论什么任务，PDCA 闭环必需角色（aggregator/tester/releaser/retrospector）都在。"""
+        plan = leader_plan_team("修复一个登录空指针 bug", list(TEAM_ROSTER))
+        for r in ("aggregator", "tester", "releaser", "retrospector"):
+            assert r in plan["team"], f"缺 PDCA 必需角色 {r}"
+
+    def test_fix_task_picks_fixer(self):
+        """修复任务 → Leader 挑 fixer（修理工）。"""
+        plan = leader_plan_team("修复登录接口空用户名500的缺陷", list(TEAM_ROSTER))
+        assert "fixer" in plan["team"]
+        assert plan["new_workers"] == []  # 班子齐全无需 hire
+
+    def test_hire_pool_shortfall(self):
+        """worker 池严重缺人 → 多个角色需 hire（防硬派）。"""
+        pool = ["aggregator"]  # 严重缺人
+        plan = leader_plan_team("搭建一个带 POST 接口的官网", pool)
+        assert "backend" in plan["new_workers"]
+        assert "frontend" in plan["new_workers"]
+
+    def test_full_lifecycle_hire_then_archive(self):
+        """完整生命周期：Leader 挑人 → 拉人进群 → 项目结束 → 归档经验，常驻班子保留。
+
+        新架构语义：backend 是「一套完整班子」的常驻成员，项目结束不回收，
+        只沉淀成员经验；临时 hire 的班子外角色才被回收。
+        """
+        pool = list(TEAM_ROSTER)
+        pool.remove("backend")
+        plan = leader_plan_team("实现一个带 POST 接口的官网", pool)
+
+        # 组建后把 new_workers hire 进来，形成项目团队
+        project_team = list(plan["team"])
+        assert "backend" in project_team
+
+        # 项目结束：Leader 收尾归档
+        knowledge: list[str] = []
+        archive = leader_project_archive(
+            {"name": "T-9001", "team": project_team}, knowledge,
+        )
+        # backend 是常驻班子成员，项目结束保留（不回收）
+        assert "backend" in archive["retained"]
+        assert "backend" not in archive["fired"]
+        assert "tester" in archive["retained"]
+        # 经验归档不丢组织记忆
+        assert len(archive["knowledge_added"]) == len(project_team)
+        assert all(entry in knowledge for entry in archive["knowledge_added"])
+
+    def test_archive_persists_member_knowledge(self):
+        """收尾归档必须沉淀每个成员经验（不丢组织记忆），常驻班子全部保留。"""
+        project_team = ["backend", "tester", "releaser", "retrospector"]
+        knowledge: list[str] = []
+        archive = leader_project_archive(
+            {"name": "T-9002", "team": project_team}, knowledge,
+        )
+        for role in project_team:
+            assert any(role in entry for entry in knowledge), f"缺 {role} 经验沉淀"
+        # 所有成员都是常驻班子，全部保留
+        assert archive["archived_members"] == project_team
+        assert archive["fired"] == []
+        assert set(archive["retained"]) == set(project_team)

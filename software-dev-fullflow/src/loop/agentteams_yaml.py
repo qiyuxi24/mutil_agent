@@ -22,6 +22,7 @@ DEFAULT_WORKER_SKILLS: dict[str, list[str]] = {
     "tester": ["test-generation", "evidence-log"],
     "releaser": ["release-gate", "evidence-log"],
     "retrospector": ["retrospective", "knowledge-rag", "evidence-log"],
+    "doc-manager": ["doc-management", "doc-gen", "evidence-log", "umodel-query"],
 }
 
 DEFAULT_WORKER_MCP: dict[str, list[str]] = {
@@ -31,6 +32,7 @@ DEFAULT_WORKER_MCP: dict[str, list[str]] = {
     "tester": ["test-platform"],
     "releaser": ["ci"],
     "retrospector": [],
+    "doc-manager": ["github", "umodel"],
 }
 
 

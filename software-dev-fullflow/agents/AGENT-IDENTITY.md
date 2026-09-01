@@ -268,12 +268,47 @@ Retrospector → RETROSPECT_DONE → 闭环完成，归档
 
 ---
 
-## 5. 动态团队与闭环的结合（创新点如何融入主流程）
+## 4b. 一套完整班子 + 固定 Leader（2026-08-16 重构）
 
-- **固定骨架**：Aggregator + Tester + Releaser + Retrospector 是闭环主链路，始终在岗。
-- **弹性扩展**：RootCause 和 Fixer 按技术栈/任务动态招募多个实例（如多个 Fixer 并行修不同缺陷）。
-- **临时角色**：跨领域任务可临时招募"策划/安全/性能"等 Agent，任务结束即裁员，经验沉淀进知识库。
-- **裁员安全**：任何 Agent 裁员前先把 `shared/` 下的产出与记忆归档（`knowledge_export`），无状态重建即可召回，不丢组织记忆。
+> **⚠️ 已废弃**：此前的「HR 双模式（修复/搭建）」方案已被用户推翻（见 `design/TEAM-REFACTOR-SINGLE-BANCHANG.md`）。
+> 现在是**一套完整班子**：Leader（固定编排者）按阶段从班子里挑人参与，不再区分「修复/搭建」两套班子。
+
+### Leader（固定编排者）— 团队编排者
+- **真实对应**：研发主管/技术经理 + HRBP。
+- **职责**：决定每个阶段需要什么样的员工 → 派单 + 协调员工间通信 → 收尾沉淀。**不写代码。**
+- **里程碑词**：`TEAM_READY`（确认参与员工）/ `RETROSPECT_DONE`（闭环结束）。
+- **skills**：`agent-memory` / `team-comm` / `project-management` / `task-coordination` / `dynamic-hiring`。
+- **落地**：`src/agentteams/workers.yaml`（leader Worker）+ `workers/leader/SOUL.md` + `manager/SOUL.md`。
+
+### 一套完整班子（Leader 按阶段挑人）
+| Agent | 真实对应 | 产出 | 里程碑 |
+|-------|---------|------|--------|
+| **Aggregator** 产品经理 | 产品经理 + 需求管理 | `spec.md`（需求规格） | `TASK_SPEC_READY` |
+| **RootCause** 架构师 | 架构师（RCA + 影响面） | `root-cause.md`（根因/影响面） | `ROOT_CAUSE_FOUND` |
+| **Frontend** 前端开发 | 前端工程师 | UI/前端页面 | `SITE_READY` |
+| **Backend** 后端开发 | 后端工程师 | POST 接口 + 数据存储 | `BACKEND_READY` |
+| **Fixer** 修理工 | 开发工程师（缺陷修复） | 修复补丁 | `FIX_APPLIED` |
+| **Tester** 测试工程师 | 测试工程师（质量门禁） | `test-report.md` | `TEST_PASSED` / `TEST_FAILED` |
+| **Releaser** 运维/DevOps | 运维工程师 | 发布 + 部署 + 回滚 | `RELEASE_OK` / `RELEASE_ROLLED_BACK` |
+| **Retrospector** 复盘沉淀 | 数据分析 + 知识沉淀 | `knowledge.md` | `RETROSPECT_DONE` |
+| **DocManager** 文档管理（2026-08-31 新增） | 文档工程师 + 配置管理员 | 文档任务状态机（`run_state`）+ 验收门禁 | `DOC_ACCEPTED` |
+| **Coordinator** 协同路由员（2026-08-31 新增） | 研发协调/项目经理（PMO） | 派发契约（七要素）+ 派发哨兵 + 复审包 | `DISPATCH_READY` / `REVIEW_PACKAGE_ACCEPTED` |
+
+- 每个 Worker 统一挂 `agent-memory`（通用可复用记忆）+ `team-comm`（员工间通信）skill。
+- **区别**：Frontend/Backend 是专精编码；Fixer 侧重既有缺陷修复；Releaser 兼任部署（原 deployer 职责并入）。
+- DocManager 用 `doc-management` skill（引用 `vendor/aris/run_state.py` + `provenance.py`，上交大 ARIS 原封不动模块）管理整套交付文档：多阶段推进 + 执行/验收分离（done ≠ accepted）+ 断点恢复。
+- Coordinator 用 `dispatch-contract` skill（借鉴 oil-oil `codex-team-mode`：派发包七要素 + 派发哨兵 fail-closed + 独立复审包）把 Leader 的派单升级为可验收契约；只做派发契约生成与校验，不代执行、不碰现有状态机。
+- 落地：`src/agentteams/workers.yaml`（一套班子 11 Worker，含 leader）+ `workers/<name>/SOUL.md` + `team-rnd.yaml`。
+
+---
+
+## 5. 一套班子与闭环的结合（Leader 编排主流程）
+
+- **Leader 编排**：Leader（固定角色）解析任务 → 从一套班子里按阶段挑人 → 派单 + 协调员工间通信 → 收尾沉淀。
+- **固定骨架**：Aggregator（产品）+ Tester（质量门禁）+ Releaser（发布）+ Retrospector（复盘）是每个任务的主链路；Frontend/Backend/Fixer 按任务类型参与。
+- **员工间通信**：Tester 可向 Backend 要开发日志（`team-comm` request-reply），Leader 协调。
+- **弹性扩展**：跨领域任务可临时 hire "策划/安全/性能"等 Agent（`dynamic-hiring`），任务结束回收，经验沉淀进知识库。
+- **记忆沉淀**：所有员工用 `agent-memory` 统一沉淀经验；裁员/回收前先归档 `shared/` 下产出与记忆，不丢组织记忆。
 
 ---
 

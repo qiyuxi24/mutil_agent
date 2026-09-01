@@ -23,16 +23,21 @@ from loop.agent_bus import AgentBus, AgentMessage, MessageType, EventBus, Event,
 # --------------------------------------------------------------------------- #
 
 def test_pdca_pipeline_authorized_by_default():
-    """PDCA 流水线上下游默认授权。"""
+    """一套班子流水线上下游默认授权（2026-08-16 重构）。"""
     bus = AgentBus()
     assert bus.is_authorized("aggregator", "rootcause")
-    assert bus.is_authorized("rootcause", "fixer")
+    assert bus.is_authorized("rootcause", "frontend")
+    assert bus.is_authorized("frontend", "backend")
+    assert bus.is_authorized("backend", "fixer")
     assert bus.is_authorized("fixer", "tester")
     assert bus.is_authorized("tester", "releaser")
     assert bus.is_authorized("releaser", "retrospector")
-    # manager ↔ all
-    assert bus.is_authorized("manager", "aggregator")
-    assert bus.is_authorized("retrospector", "manager")
+    # leader ↔ all（固定编排者）
+    assert bus.is_authorized("leader", "aggregator")
+    assert bus.is_authorized("retrospector", "leader")
+    # 员工间横向协作（Tester 可向 Backend 要开发日志）
+    assert bus.is_authorized("tester", "backend")
+    assert bus.is_authorized("backend", "tester")
 
 
 def test_unauthorized_channel_blocked():
@@ -88,7 +93,7 @@ def test_history_filter_by_task_and_type():
     bus = AgentBus()
     bus.handoff("aggregator", "rootcause", "t1", "spec ready")
     bus.feedback("tester", "fixer", "t2", "测试失败")
-    bus.alert("manager", "fixer", "t1", "超时告警")
+    bus.alert("leader", "fixer", "t1", "超时告警")
 
     assert len(bus.history(task_id="t1")) == 2
     assert len(bus.history(msg_type="TASK_HANDOFF")) == 1

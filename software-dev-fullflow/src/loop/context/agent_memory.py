@@ -411,3 +411,83 @@ class AgentMemory:
             self._long_term_entries = json.loads(json_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, KeyError):
             pass
+
+
+class AgentMemoryRegistry:
+    """统一记忆注册表 —— 按 agent_name 懒创建 / 复用 AgentMemory。
+
+    作为「可复用记忆系统」的对外统一入口，所有 Worker 通过它读写自己的记忆，
+    不再在各自 SOUL 里手写记忆沉淀规则。
+
+    用法：
+        registry = AgentMemoryRegistry(storage_dir=workdir / "shared")
+        mem = registry.get("fixer")                 # 懒创建并缓存
+        mem.record_iteration(AgentMemoryEntry(...))
+        registry.consolidate_all()                   # 全部沉淀到长期记忆
+        snapshot = registry.snapshot_all()           # 全部快照
+    """
+
+    def __init__(self, storage_dir: Path, agent_names: list[str] | None = None):
+        """
+        Args:
+            storage_dir: 共享存储根目录（如 workdir / "shared"）
+            agent_names: 预注册的 Agent 名单；不传则全部懒创建（首次 get 时建）
+        """
+        self.storage_dir = Path(storage_dir)
+        self._memories: dict[str, AgentMemory] = {}
+        if agent_names:
+            for name in agent_names:
+                self.get(name)
+
+    def get(self, name: str) -> AgentMemory:
+        """获取指定 Agent 的 AgentMemory（懒创建并缓存）。"""
+        if name not in self._memories:
+            self._memories[name] = AgentMemory(
+                agent_name=name,
+                storage_dir=self.storage_dir,
+            )
+        return self._memories[name]
+
+    def has(self, name: str) -> bool:
+        """是否已注册/已创建过该 Agent 的记忆。"""
+        return name in self._memories
+
+    def all(self) -> dict[str, AgentMemory]:
+        """返回 {agent_name: AgentMemory} 全量视图。"""
+        return dict(self._memories)
+
+    def names(self) -> list[str]:
+        """返回已注册的 Agent 名单。"""
+        return sorted(self._memories.keys())
+
+    def record(self, agent_name: str, entry: AgentMemoryEntry) -> None:
+        """便捷方法：记录一次迭代到指定 Agent 记忆。"""
+        self.get(agent_name).record_iteration(entry)
+
+    def consolidate_all(self) -> dict[str, int]:
+        """将所有 Agent 的近期迭代沉淀为长期记忆。
+
+        Returns:
+            {agent_name: 新增长期记忆条目数}
+        """
+        results: dict[str, int] = {}
+        for name, mem in self._memories.items():
+            count = mem.consolidate_to_long_term()
+            if count > 0:
+                results[name] = count
+        return results
+
+    def snapshot_all(self) -> dict[str, dict]:
+        """返回所有 Agent 的记忆快照。"""
+        return {name: mem.snapshot() for name, mem in self._memories.items()}
+
+    def recall(self, agent_name: str, query: str, phase: str = "", top_k: int = 5) -> list[dict]:
+        """便捷方法：检索指定 Agent 的相关历史经验。"""
+        return self.get(agent_name).recall(query, phase=phase, top_k=top_k)
+
+    def to_dict(self) -> dict:
+        """序列化注册表摘要（供观测/审计）。"""
+        return {
+            "agent_count": len(self._memories),
+            "agents": self.snapshot_all(),
+        }

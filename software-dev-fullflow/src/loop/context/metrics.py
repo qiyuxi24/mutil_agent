@@ -5,6 +5,8 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from .events import ContextEvent
+
 
 class PerformanceMetrics:
     """性能监控。
@@ -39,7 +41,7 @@ class PerformanceMetrics:
         """计算平均上下文利用率。"""
         utilizations = []
         for e in self._events:
-            if e["type"] == "iteration_finished":
+            if e["type"] == ContextEvent.ITERATION_FINISHED:
                 budget = e["data"].get("budget_snapshot", {})
                 util = budget.get("utilization", 0)
                 if util > 0:
@@ -50,27 +52,27 @@ class PerformanceMetrics:
 
     def overflow_rate(self) -> float:
         """溢出率。"""
-        total_iterations = sum(1 for e in self._events if e["type"] == "iteration_finished")
+        total_iterations = sum(1 for e in self._events if e["type"] == ContextEvent.ITERATION_FINISHED)
         if total_iterations == 0:
             return 0.0
         overflows = sum(
             e["data"].get("budget_snapshot", {}).get("overflow_count", 0)
-            for e in self._events if e["type"] == "iteration_finished"
+            for e in self._events if e["type"] == ContextEvent.ITERATION_FINISHED
         )
         return overflows / total_iterations
 
     def compact_frequency(self) -> float:
         """平均每次迭代的压缩次数。"""
-        total_iterations = sum(1 for e in self._events if e["type"] == "iteration_finished")
+        total_iterations = sum(1 for e in self._events if e["type"] == ContextEvent.ITERATION_FINISHED)
         if total_iterations == 0:
             return 0.0
-        compacts = sum(1 for e in self._events if e["type"] == "micro_compact")
+        compacts = sum(1 for e in self._events if e["type"] == ContextEvent.MICRO_COMPACT)
         return compacts / total_iterations
 
     def memory_retention_score(self) -> float:
         """记忆留存率综合评分（0.0 ~ 1.0）。"""
         memory_snapshots = [
-            e["data"] for e in self._events if e["type"] == "memory_persisted"
+            e["data"] for e in self._events if e["type"] == ContextEvent.MEMORY_PERSISTED
         ]
         if not memory_snapshots:
             return 0.0

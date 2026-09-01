@@ -16,30 +16,71 @@
 # 若继承 Stop 会被提升为终止性错误导致安装中止。
 $ErrorActionPreference = "Continue"
 
-# ---------- 配置（可自行修改） ----------
-# DeepSeek（OpenAI 兼容）——与 demo/.env 一致
-$env:AGENTTEAMS_LLM_PROVIDER = "openai-compat"
-$env:AGENTTEAMS_DEFAULT_MODEL = "deepseek-v4-flash"
-$env:AGENTTEAMS_OPENAI_BASE_URL = "https://api.deepseek.com/v1"
-$env:AGENTTEAMS_LLM_API_KEY = $env:DEEPSEEK_API_KEY   # 从当前环境读取，或在此填硬编码
+# ============================================================
+# 配置加载：统一从项目根目录 .env 读取（模板：software-dev-fullflow\.env.example）
+# 避免配置散落 / 凭据硬编码。读取顺序：真实环境变量 > .env > 内置默认值。
+# ============================================================
+$script:root = Split-Path -Parent $PSScriptRoot
+$script:dotenv = Join-Path $script:root ".env"
 
-# 管理后台账号
-$env:AGENTTEAMS_ADMIN_USER = "admin"
-$env:AGENTTEAMS_ADMIN_PASSWORD = "AgentTeams2026!"
-$env:AGENTTEAMS_MANAGER_PASSWORD = "AgentTeams2026!"
+# 读取 .env 键值（简单 KEY=VALUE 解析，忽略 # 注释行）
+function Read-Dotenv {
+    param([string]$Path)
+    $map = @{}
+    if (Test-Path $Path) {
+        Get-Content $Path | ForEach-Object {
+            $line = $_.Trim()
+            if ($line -and -not $line.StartsWith("#") -and $line.Contains("=")) {
+                $k, $v = $line -split "=", 2
+                $map[$k.Trim()] = $v.Trim()
+            }
+        }
+    }
+    return $map
+}
+# 读取配置：真实环境变量优先，其次 .env，最后默认值
+function Get-Config {
+    param([string]$Key, [string]$Default = "")
+    $envVal = [Environment]::GetEnvironmentVariable($Key, "Process")
+    if ($envVal) { return $envVal }
+    if ($script:envMap.ContainsKey($Key) -and $script:envMap[$Key]) { return $script:envMap[$Key] }
+    return $Default
+}
+$script:envMap = Read-Dotenv $script:dotenv
 
-# 非交互 + 本地模式
-$env:AGENTTEAMS_NON_INTERACTIVE = "1"
-$env:AGENTTEAMS_LOCAL_ONLY = "1"
-$env:AGENTTEAMS_LANGUAGE = "zh"
-$env:AGENTTEAMS_MATRIX_E2EE = "0"
-$env:AGENTTEAMS_DEFAULT_WORKER_RUNTIME = "copaw"
-$env:AGENTTEAMS_MANAGER_RUNTIME = "copaw"
+# ---------- LLM（OpenAI 兼容）----------
+$env:AGENTTEAMS_LLM_PROVIDER = Get-Config "AGENTTEAMS_LLM_PROVIDER" "openai-compat"
+$env:AGENTTEAMS_DEFAULT_MODEL = Get-Config "AGENTTEAMS_DEFAULT_MODEL" "deepseek-v4-flash"
+$env:AGENTTEAMS_OPENAI_BASE_URL = Get-Config "AGENTTEAMS_OPENAI_BASE_URL" "https://api.deepseek.com/v1"
+# LLM API Key：AGENTTEAMS_LLM_API_KEY 优先，回退 DEEPSEEK_API_KEY
+$env:AGENTTEAMS_LLM_API_KEY = Get-Config "AGENTTEAMS_LLM_API_KEY" ""
+if (-not $env:AGENTTEAMS_LLM_API_KEY) { $env:AGENTTEAMS_LLM_API_KEY = Get-Config "DEEPSEEK_API_KEY" "" }
+
+# ---------- 管理后台账号 ----------
+$env:AGENTTEAMS_ADMIN_USER = Get-Config "AGENTTEAMS_ADMIN_USER" "admin"
+# 密码：优先 .env 已有值；否则自动生成，并回写 .env（避免硬编码）
+$env:AGENTTEAMS_ADMIN_PASSWORD = Get-Config "AGENTTEAMS_ADMIN_PASSWORD" ""
+if (-not $env:AGENTTEAMS_ADMIN_PASSWORD) {
+    $generated = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 16 | ForEach-Object { [char]$_ })
+    $env:AGENTTEAMS_ADMIN_PASSWORD = "AGT-" + $generated
+    Add-Content -Path $script:dotenv -Value "`n# 由 reinstall-agentteams.ps1 自动生成`nAGENTTEAMS_ADMIN_PASSWORD=$($env:AGENTTEAMS_ADMIN_PASSWORD)"
+    Write-Host "  [info] 已生成 AGENTTEAMS_ADMIN_PASSWORD 并写入 $script:dotenv" -ForegroundColor Yellow
+}
+$env:AGENTTEAMS_MANAGER_PASSWORD = $env:AGENTTEAMS_ADMIN_PASSWORD
+
+# ---------- 非交互 + 本地模式 ----------
+$env:AGENTTEAMS_NON_INTERACTIVE = Get-Config "AGENTTEAMS_NON_INTERACTIVE" "1"
+$env:AGENTTEAMS_LOCAL_ONLY = Get-Config "AGENTTEAMS_LOCAL_ONLY" "1"
+$env:AGENTTEAMS_LANGUAGE = Get-Config "AGENTTEAMS_LANGUAGE" "zh"
+$env:AGENTTEAMS_MATRIX_E2EE = Get-Config "AGENTTEAMS_MATRIX_E2EE" "0"
+$env:AGENTTEAMS_DEFAULT_WORKER_RUNTIME = Get-Config "AGENTTEAMS_DEFAULT_WORKER_RUNTIME" "copaw"
+$env:AGENTTEAMS_MANAGER_RUNTIME = Get-Config "AGENTTEAMS_MANAGER_RUNTIME" "copaw"
 
 # ---------- 校验 ----------
 if (-not $env:AGENTTEAMS_LLM_API_KEY) {
-    Write-Host "[ERROR] 未找到 AGENTTEAMS_LLM_API_KEY（DeepSeek API Key）" -ForegroundColor Red
-    Write-Host "  请在运行前设置：`$env:DEEPSEEK_API_KEY='sk-...' 或在此脚本中填硬编码" -ForegroundColor Yellow
+    Write-Host "[ERROR] 未找到 LLM API Key（AGENTTEAMS_LLM_API_KEY / DEEPSEEK_API_KEY）" -ForegroundColor Red
+    Write-Host "  请在 $script:dotenv 中填入（参考 $script:root\.env.example），例如：" -ForegroundColor Yellow
+    Write-Host "    DEEPSEEK_API_KEY=sk-..." -ForegroundColor Yellow
     exit 1
 }
 

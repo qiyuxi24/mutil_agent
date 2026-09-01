@@ -73,6 +73,7 @@
 │  repo-context     → 仓库结构感知（模块/依赖/变更范围）    │
 │  knowledge-rag    → 知识库检索（经验教训/已修复缺陷）     │
 │  evidence-log     → 执行证据沉淀（Trace/Log/报告）      │
+│  doc-gen          → 文档生成（Markdown/HTML→Word/PDF） │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -292,7 +293,7 @@ skills:
 
 > L0 工程层是「用 Skill 管理 Skill」的治理中枢，Manager 通过官方脚本集中管理所有 Worker 的 skills，保证整个 Skill 生态与比赛官方 AgentTeams 机制对齐。
 
-### L1 基座层（5 个，跨 Agent 复用）
+### L1 基座层（11 个，跨 Agent 复用）
 | Skill | 用途 |
 |-------|------|
 | `git-operations` | Git 操作：分支/checkout/diff/blame/commit/push，安全提交审计 |
@@ -300,11 +301,56 @@ skills:
 | `repo-context` | 仓库结构感知：模块划分、依赖图、变更范围、构建入口 |
 | `knowledge-rag` | 知识库检索/写入：查历史经验教训、已修复缺陷、失败模式 |
 | `evidence-log` | 执行证据沉淀：把 Trace/Log/报告写入审计日志，可追溯 |
+| `doc-gen` | 文档生成：Markdown/HTML → Word(.docx)/PDF，中文字体/表格/代码块/页码，产出正式交付物 |
+| `doc-management` | 文档任务全生命周期状态机：多阶段推进 + 执行/验收分离（done ≠ accepted）+ 断点恢复（引用 `vendor/aris/` 原封不动模块） |
+| `evidence-check` | 确定性证据预检（ARIS 移植）：验收前机械校验「被引用的证据是否真实存在」，路径存在 + 数字/字符串确实在源文件里，零模型调用、fail-closed，防幻觉证据 |
+| `injection-scan` | 上下文注入扫描（ARIS 移植）：对要注入 agent 上下文的第三方内容做 regex 威胁扫描（prompt 注入/外泄/C2），命中隔离 |
+| `stall-detection` | 停滞检测（ARIS 移植）：每轮迭代记录新发现数，连续 0 新发现 → 结构性转向（≥2）/ 上报人类（≥4） |
+| `review-gate` | 跨模型评审路由裁决表（ARIS 移植）：同族评审不能终结验收，只有跨模型家族正向判定才 accepted，卡住时 escalate |
+| `dispatch-contract` | 派发契约化（借鉴 oil-oil codex-team-mode）：派发包七要素模板 + 派发哨兵 fail-closed（缺验收标准即拒）+ 独立复审包协议 + 角色-模型映射，把派单升级为可验收契约 |
 
 ### L3 协同层（1 个，归 Manager/Team Leader）
 | Skill | 用途 |
 |-------|------|
 | `collaboration-loop` | 研发闭环调度：任务拆解 → 里程碑驱动 → 验证闸门判定 → 回滚判定，驱动 8 个闭环状态流转（衔接 `MANAGER-LOOP-DESIGN.md`） |
+
+---
+
+## 九·B、外部 Skill 归档区（oil-oil 参考库，2026-09-01 新增）
+
+> 归档 GitHub 用户 **oil-oil**（林志煌，https://github.com/oil-oil）的 29 个原创 Skill 至 `skills/oil-oil/`（按项目形式归档，目录名=仓库名，frontmatter name 见映射）。**不挂载任何 Worker**，仅作外部参考。详见 `skills/oil-oil/README.md`；完整调查见 `references/oil-oil/INVESTIGATION.md`。
+
+| 归档目录 | 一句话用途 |
+|-------|-----------|
+| `oil-oil/agent-record` | 录制带自然鼠标/聚焦/说明文字的产品 Demo（2K60/4K60） |
+| `oil-oil/beautify-github-readme` | 用 SVG 标题 + 真实案例设计主题化 README 首页 |
+| `oil-oil/build-deepseek-harness-plugin` | 创建/改造/评审/发布 DeepSeek Harness 可安装组合包 |
+| `oil-oil/bulkgen-skill` | BulkGen 批量生成 Agent Skill |
+| `oil-oil/codex` | 把编码/探索/评审/验证派发给持久化 Codex CLI Agent |
+| `oil-oil/codex-explore-skill` | Codex 子 Agent：编码前大范围代码库侦察 |
+| `oil-oil/codex-team-mode` | 协调 4 个自定义子 Agent 的团队协作（借鉴出 `dispatch-contract`） |
+| `oil-oil/codex-usage` | 生成中文 Codex Token 使用报告 |
+| `oil-oil/computer-use-skill` | Claude Code computer use（视觉操作） |
+| `oil-oil/draw-ui` | 生成 UI 设计稿并还原成 HTML/CSS |
+| `oil-oil/git-ship` | 分支/PR/合并一键发布 |
+| `oil-oil/grok` | 把前端/UI/编码/评审/图片任务委托给本机 Grok CLI |
+| `oil-oil/grok-designer` | 把 Grok 4.5 作为外部设计顾问（UI/UX 评审） |
+| `oil-oil/html-doc` | 把 Markdown 转成可读性更强的 HTML 文档 |
+| `oil-oil/kimi` | 把设计/前端/编码任务委托给本地 Kimi Code CLI |
+| `oil-oil/lumina` | AI 英语外教（飞书 Base，完整人格 + 持续记忆） |
+| `oil-oil/oil-cover` | 生成小红书/B 站 AI 工具实操视频封面 |
+| `oil-oil/oil-html` | oil 个人专用 HTML 分享文档 |
+| `oil-oil/oil-ppt` | 创建/修改 16:9 HTML 演示文稿并按需导出 PPTX |
+| `oil-oil/oil-skill-creator` | 像做产品一样写 Skill：创建/评审/整改/发布 |
+| `oil-oil/oil-tone` | 让 AI 文案保持真实、平实、完整、易读的文风 |
+| `oil-oil/oil-video-article` | 视频转公众号图文工作流 |
+| `oil-oil/oil-visual` | 一致的 oil 风格视觉系统（manga-ink 插画风） |
+| `oil-oil/qwen-subtitle` | 百炼(千问)视频字幕纠错/翻译/克隆原声配音出海 |
+| `oil-oil/react-flow-advanced-best-practices` | React Flow 专家级指导（架构/性能/类型安全） |
+| `oil-oil/screen-studio-editor` | 剪辑整理 Screen Studio .screenstudio 工程 |
+| `oil-oil/see-skill` | 多模态视觉桥：强制模型看图 |
+| `oil-oil/vibe-hub-skill` | 让 Agent 学懂 Vibe Coding 术语、把模糊描述改成准确需求 |
+| `oil-oil/video-publisher-skill` | 为小红书/抖音/B 站/视频号准备并发布视频草稿 |
 
 ---
 
@@ -338,8 +384,16 @@ skills:
 | repo-context（L1 基座） | `skills/repo-context/SKILL.md` |
 | knowledge-rag（L1 基座） | `skills/knowledge-rag/SKILL.md` |
 | evidence-log（L1 基座） | `skills/evidence-log/SKILL.md` |
+| doc-gen（L1 基座） | `skills/doc-gen/SKILL.md` |
+| doc-management（L1 基座，2026-08-31） | `skills/doc-management/SKILL.md` |
+| evidence-check（L1 基座，ARIS 移植） | `skills/evidence-check/SKILL.md` |
+| injection-scan（L1 基座，ARIS 移植） | `skills/injection-scan/SKILL.md` |
+| stall-detection（L1 基座，ARIS 移植） | `skills/stall-detection/SKILL.md` |
+| review-gate（L1 基座，ARIS 移植） | `skills/review-gate/SKILL.md` |
+| dispatch-contract（L1 基座，2026-08-31，借鉴 oil-oil） | `skills/dispatch-contract/SKILL.md` |
+| evidence-integrity（L1 基座，ARIS 协议） | `skills/evidence-integrity/SKILL.md` |
 
-> L1 基座 5 个 Skill（git-operations/code-search/repo-context/knowledge-rag/evidence-log）当前为**初赛占位空壳**（frontmatter 对齐官方格式），复赛补齐指令正文。GAP-11 核对脚本：`python scripts/verify-skill-refs.py --create`。
+> L1 基座 5 个初赛 Skill（git-operations/code-search/repo-context/knowledge-rag/evidence-log）当前为**初赛占位空壳**（frontmatter 对齐官方格式），复赛补齐指令正文；`doc-gen` 为完整实现（含可执行脚本 `scripts/docgen.py` + `tests/test_docgen.py`）。GAP-11 核对脚本：`python scripts/verify-skill-refs.py --create`。
 
 > **Skill 工程管理脚本（比赛官方 AgentTeams）**：
 > - 分配：`bash skills/scripts/push-worker-skills.sh --worker <name> --add-skill <skill>`
@@ -353,6 +407,7 @@ skills:
 - 理论总纲：`references/theory/THEORY.md`
 - 个体工程纪律理论：`references/theory/INDIVIDUAL-ENGINEERING-DISCIPLINES.md`
 - 个体纪律层手册：`skills/individual/README.md`
+- 外部 Skill 归档区（oil-oil 参考库）：`skills/oil-oil/README.md`
 - 闭环状态机：`design/PDCA-CLOSED-LOOP.md`
 - 调度 loop 设计：`design/MANAGER-LOOP-DESIGN.md`
 - Agent 清单：`agents/AGENT-IDENTITY.md`

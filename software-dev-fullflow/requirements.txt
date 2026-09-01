@@ -1,0 +1,56 @@
+# AgentTeams Python 客户端核心依赖
+# 安装: pip install -r requirements.txt
+
+# AgentScope 框架
+agentscope>=2.0.0
+
+# Web 框架
+fastapi>=0.100.0
+uvicorn>=0.20.0
+starlette>=0.30.0
+
+# HTTP 客户端
+httpx>=0.25.0
+aiohttp>=3.9.0
+
+# 异步支持
+anyio>=4.0.0
+
+# 数据验证
+pydantic>=2.0.0
+jsonschema>=4.0.0
+
+# YAML 解析
+PyYAML>=6.0
+
+# 终端 UI
+rich>=13.0.0
+typer>=0.9.0
+
+# WebSocket
+python-socketio>=5.0.0
+simple-websocket>=1.0.0
+
+# 模板引擎
+Jinja2>=3.0.0
+
+# 工具库
+python-dotenv>=1.0.0
+shortuuid>=1.0.0
+tqdm>=4.0.0
+
+# OpenAI 兼容客户端
+openai>=1.0.0
+
+# MCP 协议
+mcp>=0.9.0,<1.0
+
+# 文档生成（skills/doc-gen/scripts/docgen.py）
+python-docx>=1.1.0
+markdown>=3.5.0
+# 可选：PDF 渲染（weasyprint，BSD 许可；Linux 容器需系统库，见 skills/doc-gen/README.md）
+# weasyprint>=61.0
+
+# 测试
+pytest>=7.0.0
+pytest-asyncio>=0.21.0

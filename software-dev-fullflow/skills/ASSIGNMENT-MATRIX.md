@@ -9,15 +9,30 @@
 
 ## 一、分配总览
 
+> 2026-08-16 重构：**一套完整班子**，不再有「修复/搭建」双模式（见 `design/TEAM-REFACTOR-SINGLE-BANCHANG.md`）。
+> 所有 Worker 统一挂 `agent-memory`（通用可复用记忆）+ `team-comm`（员工间通信），其余按职能挂载。
+
 | 职能 Worker（内部名） | 真实角色 | PDCA | 挂载 Skill（Worker.spec.skills） | 里程碑输出 |
 |----------------------|---------|------|--------------------------------|-----------|
-| **Aggregator** 缺陷聚合员 | 产品/缺陷管理 | P | `issue-parsing` + L1 基座 | `TASK_SPEC_READY` |
-| **RootCause** 根因定位员 | 架构师 | D | `root-cause-analysis`, `impact-analysis` + L1 基座 | `ROOT_CAUSE_FOUND` |
-| **Fixer** 修复工程师（可多实例） | 前后端开发 | D | `code-gen` + L1 基座（+ 技术栈变体） | `FIX_APPLIED` |
-| **Tester** 测试验证员 | 测试工程师 | C | `test-generation` + L1 基座 | `TEST_PASSED`/`TEST_FAILED` |
-| **Releaser** 发布确认员 | 运维/DevOps | A | `release-gate` + L1 基座 | `RELEASE_OK`/`ROLLED_BACK` |
-| **Retrospector** 复盘沉淀员 | 数据分析+知识沉淀 | A | `retrospective` + L1 基座 | `RETROSPECT_DONE` |
-| **Manager / Team Leader**（协调） | 项目经理 | 全 | `manage-skill`（Skill 编排）+ L3 `collaboration-loop` | 调度闭环 |
+| **Leader** 团队编排者（固定） | 研发主管/技术经理+HRBP | 全 | `agent-memory`, `team-comm`, `project-management`, `task-coordination`, `dynamic-hiring`, `doc-gen`, `stall-detection`, `evidence-integrity` | `TEAM_READY`/`RETROSPECT_DONE` |
+| **Aggregator** 产品经理 | 产品/需求管理 | P | `issue-parsing` + `agent-memory` + `team-comm` + L1 基座 + `doc-gen` + `injection-scan` | `TASK_SPEC_READY` |
+| **RootCause** 架构师 | 架构师（RCA+影响面） | D | `root-cause-analysis`, `impact-analysis` + `agent-memory` + `team-comm` + L1 基座 + `doc-gen` | `ROOT_CAUSE_FOUND` |
+| **Frontend** 前端开发 | 前端工程师 | D | `code-gen` + `agent-memory` + `team-comm` + L1 基座 | `SITE_READY` |
+| **Backend** 后端开发 | 后端工程师 | D | `backend-impl` + `agent-memory` + `team-comm` + L1 基座 | `BACKEND_READY` |
+| **Fixer** 修理工 | 开发工程师（缺陷修复） | D | `code-gen` + `agent-memory` + `team-comm` + L1 基座 | `FIX_APPLIED` |
+| **Tester** 测试工程师 | 测试工程师（质量门禁） | C | `test-generation`, `deploy-runtime` + `agent-memory` + `team-comm` + L1 基座 + `doc-gen` + `evidence-check`, `review-gate` | `TEST_PASSED`/`TEST_FAILED` |
+| **Releaser** 运维/DevOps | 运维工程师（发布+部署） | A | `release-gate`, `deploy-runtime` + `agent-memory` + `team-comm` + L1 基座 + `doc-gen` + `review-gate`, `evidence-integrity` | `RELEASE_OK`/`ROLLED_BACK` |
+| **Retrospector** 复盘沉淀员 | 数据分析+知识沉淀 | A | `retrospective` + `agent-memory` + `team-comm` + L1 基座 + `doc-gen` | `RETROSPECT_DONE` |
+| **DocManager** 文档管理人员 | 文档工程师+配置管理员 | 全 | `doc-management` + `doc-gen` + `agent-memory` + `team-comm` + L1 基座 | `DOC_ACCEPTED` |
+| **Coordinator** 协同路由员 | 研发协调/项目经理（PMO） | 全 | `dispatch-contract` + `agent-memory` + `team-comm` + L1 基座 | `DISPATCH_READY`/`REVIEW_PACKAGE_ACCEPTED` |
+
+### 通用能力 Skill（所有 Worker 统一挂载，2026-08-16 新增）
+
+> 让「可复用记忆」「员工间通信」「文档产出」成为显式能力，而非各 SOUL 手写：
+> - `agent-memory`（含 `scripts/memory_cli.py`）：按 Agent 读写跨任务独立记忆（每日日志/长期记忆/迭代记录），统一沉淀/检索。
+> - `team-comm`（含 `scripts/comm_cli.py`）：员工间定向请求/应答（如 Tester→Backend 要开发日志），走 AgentBus request-reply / Matrix @mention。
+> - `doc-gen`（含 `scripts/docgen.py`）：Markdown/HTML → Word/PDF 正式交付物（需求/设计/测试报告/发布说明/复盘报告/对外汇报），挂给 6 个文档产出角色（Leader/Aggregator/RootCause/Tester/Releaser/Retrospector），见总览表。
+> - `doc-management`（2026-08-31 新增，引用 `vendor/aris/run_state.py` + `provenance.py` 原封不动模块）：文档任务全生命周期状态机（大纲→初稿→评审→定稿→归档），执行与验收分离（done ≠ accepted）、断点可恢复；挂给 **DocManager**。
 
 > 每个 Worker 自动携带 AgentTeams 内置默认 skill：`file-sync` / `task-progress` / `project-participation` / `mcporter` / `find-skills`（无需手动挂载，Worker 镜像自动分配）。
 
@@ -48,6 +63,14 @@ L1 基座被 L2 领域 Skill 依赖，跨多个 Worker 复用：
 | `repo-context` | RootCause、impact-analysis、code-gen |
 | `knowledge-rag` | issue-parsing（查同类）、root-cause（查历史）、retrospective（写库） |
 | `evidence-log` | 全部（执行证据沉淀，可审计） |
+| `doc-gen` | Leader（汇报）、Aggregator（PRD）、RootCause（RCA）、Tester（测试报告）、Releaser（发布说明）、Retrospector（复盘报告） |
+| `doc-management` | DocManager（文档任务状态机/验收门禁/断点恢复） |
+| `evidence-check` | Tester（验收前预检）、Releaser（发布前）、DocManager（定稿前） |
+| `injection-scan` | Aggregator（外部需求/抓取内容入库前） |
+| `stall-detection` | Leader（每轮编排） |
+| `review-gate` | Tester（验收裁决）、Releaser（发布门禁） |
+| `evidence-integrity` | Leader（编排准则）、Releaser（发布准则）、Tester（验收准则） |
+| `dispatch-contract` | Coordinator（派发契约/哨兵/复审包，借鉴 oil-oil codex-team-mode） |
 
 ---
 
@@ -153,6 +176,7 @@ Manager 通过 `manage-skill` + `skills/scripts/` 集中编排：**定义 → �
 | Tester | `test-platform` | 跑测试/覆盖率/静态分析 | `test-generation/scripts/verify_test_gate.py` |
 | Releaser | `ci`（可选） | 触发发布/回滚流水线 | — |
 | Retrospector | —（内置 RAG） | 写知识库 | — |
+| DocManager | `umodel` + `github` | 读共享文档/拉模板 | `doc-management/scripts/`（引用 `vendor/aris/run_state.py`） |
 
 > 接入机制：`scripts/register-mcp.ps1`（复用官方 `setup-mcp-server.sh`/`setup-mcp-proxy.sh`）→ Higress 网关 upsert → Consumer 授权（REPLACE）→ `mc cp` 推 MinIO → Worker `mcporter` 拉取。详见 `src/agentteams/mcp/README.md`。
 > MCP 模板：`src/agentteams/mcp/mcp-code-scan.yaml`（Fixer）、`mcp-test-platform.yaml`（Tester）；`github` 用官方内置 `mcp-github.yaml`。

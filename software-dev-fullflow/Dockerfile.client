@@ -1,0 +1,28 @@
+# AgentTeams Python 客户端容器化
+# 用法：
+#   docker build -t agentteams-client -f Dockerfile.client .
+#   docker run --rm agentteams-client "修复登录接口空用户名500"
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# 安装系统依赖
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# 安装 Python 依赖
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# 复制项目文件
+COPY src/ src/
+COPY skills/ skills/
+COPY scripts/ scripts/
+
+# 设置 PYTHONPATH
+ENV PYTHONPATH=/app/src
+
+# 默认以 mock 模式运行（不需要 AgentTeams 平台）
+CMD ["python", "src/run.py", "--mock", "--dashboard"]

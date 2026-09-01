@@ -127,6 +127,9 @@ cache/
 # 详见 references/README.md
 references/
 
+# ===== AgentTeams 凭据（严禁提交）=====
+.agentteams_token
+
 # ===== 敏感凭据 / 本地环境快照（严禁提交）=====
 scripts/controller.env
 scripts/controller-env-snapshot-*.json

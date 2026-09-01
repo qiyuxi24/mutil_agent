@@ -41,6 +41,11 @@ import httpx
 
 from .agentteams_matrix import MatrixClientMixin
 from . import agentteams_yaml
+from .config import load_dotenv  # noqa: F401  —— 模块级副作用：加载根目录 .env
+
+# 统一配置：模块导入时把根目录 .env 注入 os.environ（幂等，不覆盖真实环境变量）。
+# 使下方 AgtCLI.MODE / AgentTeamsClient 的各 os.environ.get(...) 默认值可被 .env 覆盖。
+load_dotenv()
 
 
 # ========================================================================== #
@@ -53,10 +58,85 @@ class AgtCLI:
     支持两种模式：
       - docker:  docker exec agentteams-controller agt ...
       - local:   agt ...（本地安装）
+
+    HTTP fallback: 优先通过 Controller REST API 调用，失败时回退 CLI。
+    Controller API 在容器内运行在 localhost:8090，通过 docker exec 代理访问。
     """
 
     MODE = os.environ.get("AGT_MODE", "docker")  # docker | local
     CONTROLLER = os.environ.get("AGT_CONTROLLER", "agentteams-controller")
+    CONTROLLER_API = os.environ.get("AGT_CONTROLLER_API", "http://127.0.0.1:18080")
+
+    @classmethod
+    def _load_auth_token(cls) -> str:
+        """从文件或环境变量加载 Controller API 认证 token。"""
+        token = os.environ.get("AGENTTEAMS_AUTH_TOKEN", "")
+        if token:
+            return token
+        # 尝试从本地 token 文件读取
+        token_file = os.environ.get(
+            "AGENTTEAMS_AUTH_TOKEN_FILE",
+            str(Path(__file__).resolve().parent.parent.parent / ".agentteams_token"),
+        )
+        try:
+            if os.path.isfile(token_file):
+                with open(token_file, "r", encoding="utf-8") as f:
+                    token = f.read().strip()
+        except OSError:
+            pass
+        return token
+
+    @classmethod
+    async def _http_request(cls, method: str, path: str, data: dict = None,
+                            timeout: int = 30) -> dict:
+        """HTTP 方式调用 Controller REST API（通过 docker exec 代理）。"""
+        # Controller API 运行在容器内 localhost:8090，通过 docker exec curl 代理
+        auth_token = cls._load_auth_token()
+        auth_header = f"-H 'Authorization: Bearer {auth_token}'" if auth_token else ""
+        url = f"http://localhost:8090/api/v1/{path}"
+        if method == "GET":
+            curl_cmd = f"curl -s {auth_header} {url}"
+        elif method == "POST":
+            data_str = json.dumps(data) if data else "{}"
+            curl_cmd = f"curl -s -X POST {auth_header} -H 'Content-Type: application/json' -d '{data_str}' {url}"
+        elif method == "DELETE":
+            curl_cmd = f"curl -s -X DELETE {auth_header} {url}"
+        else:
+            raise ValueError(f"Unsupported HTTP method: {method}")
+        proc = await asyncio.create_subprocess_exec(
+            "docker", "exec", cls.CONTROLLER, "bash", "-c", curl_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            raise RuntimeError(f"HTTP 请求超时 ({timeout}s): {method} {path}")
+        stdout_str = stdout.decode("utf-8", errors="replace").strip()
+        if proc.returncode != 0:
+            raise RuntimeError(f"HTTP {method} {path} failed: {stderr.decode('utf-8', errors='replace')[:200]}")
+        if not stdout_str:
+            return {}
+        try:
+            return json.loads(stdout_str)
+        except json.JSONDecodeError:
+            return {"_raw": stdout_str}
+
+    @classmethod
+    async def _http_fallback(cls, args: tuple, api_path: str, method: str = "GET",
+                             data: dict = None, timeout: int = 60) -> tuple[int, str, str]:
+        """优先 HTTP，失败回退 docker exec CLI。
+
+        Returns:
+            (exit_code, stdout, stderr) — 与 run() 相同签名。
+        """
+        try:
+            result = await cls._http_request(method, api_path, data, timeout=min(timeout, 30))
+            return 0, json.dumps(result, ensure_ascii=False), ""
+        except Exception as e:
+            print(f"  ⚠ HTTP API 不可用 ({e})，回退 CLI: agt {' '.join(args)}")
+            return await cls.run(*args, timeout=timeout)
 
     @classmethod
     async def run(cls, *args: str, timeout: int = 60) -> tuple[int, str, str]:
@@ -209,14 +289,21 @@ class AgentTeamsClient(MatrixClientMixin):
         result = await client.wait_for_task(task.task_id)  # 等待任务完成
     """
 
-    # PDCA 流水线的 6 个 Worker（与 src/agentteams/workers.yaml 对齐）
-    PDCA_WORKERS = ["aggregator", "rootcause", "fixer", "tester", "releaser", "retrospector"]
+    # 「一套完整班子」的 Worker（与 src/agentteams/workers.yaml 对齐）
+    # 2026-08-16 重构：不再有「修复/搭建」两套班子，Leader 从这套班子里挑人参与。
+    PDCA_WORKERS = [
+        "leader", "aggregator", "rootcause",
+        "frontend", "backend", "fixer",
+        "tester", "releaser", "retrospector",
+    ]
 
-    # 里程碑词 → 下一个 Worker 的映射
+    # 里程碑词 → 下一个 Worker 的映射（Leader 可动态挑人，这里是首选默认）
     MILESTONE_NEXT: dict[str, str] = {
         "TASK_SPEC_READY": "rootcause",
         "ROOT_CAUSE_FOUND": "fixer",
         "FIX_APPLIED": "tester",
+        "SITE_READY": "tester",
+        "BACKEND_READY": "tester",
         "TEST_PASSED": "releaser",
         "TEST_FAILED": "fixer",          # 打回
         "RELEASE_OK": "retrospector",
@@ -263,7 +350,9 @@ class AgentTeamsClient(MatrixClientMixin):
 
     async def ping(self) -> bool:
         """检查 AgentTeams 平台是否可用。"""
-        code, stdout, stderr = await AgtCLI.run("get", "managers", timeout=10)
+        code, stdout, _ = await AgtCLI._http_fallback(
+            ("get", "managers"), "managers", timeout=10
+        )
         return code == 0 and "Running" in stdout
 
     async def status(self) -> dict[str, Any]:
@@ -286,19 +375,25 @@ class AgentTeamsClient(MatrixClientMixin):
 
     async def list_workers(self) -> list[WorkerInfo]:
         """列出所有 Worker。"""
-        code, stdout, _ = await AgtCLI.run("get", "workers")
+        code, stdout, _ = await AgtCLI._http_fallback(
+            ("get", "workers"), "workers", timeout=30
+        )
         if code != 0:
             return []
         workers = []
         for name in re.findall(r"name:\s*(\S+)", stdout):
             # 获取详细信息
-            _, detail, _ = await AgtCLI.run("get", "worker", name, "-o", "yaml")
+            _, detail, _ = await AgtCLI._http_fallback(
+                ("get", "worker", name, "-o", "yaml"), f"workers/{name}", timeout=30
+            )
             workers.append(WorkerInfo.from_agt_output(name, detail))
         return workers
 
     async def get_worker(self, name: str) -> WorkerInfo | None:
         """获取单个 Worker 详情。"""
-        code, stdout, _ = await AgtCLI.run("get", "worker", name, "-o", "yaml")
+        code, stdout, _ = await AgtCLI._http_fallback(
+            ("get", "worker", name, "-o", "yaml"), f"workers/{name}", timeout=30
+        )
         if code != 0:
             return None
         return WorkerInfo.from_agt_output(name, stdout)
@@ -312,22 +407,20 @@ class AgentTeamsClient(MatrixClientMixin):
         skills: list[str] | None = None,
         mcp_servers: list[str] | None = None,
     ) -> bool:
-        """创建 Worker。"""
-        args = [
-            "create", "worker",
-            "--name", name,
-            "--soul-file", soul_file,
-            "--model", model,
-            "--runtime", runtime,
-        ]
-        if skills:
-            for s in skills:
-                args.extend(["--skills", s])
-        if mcp_servers:
-            for m in mcp_servers:
-                args.extend(["--mcpServers", m])
-
-        code, stdout, stderr = await AgtCLI.run(*args, timeout=30)
+        """创建 Worker（优先 HTTP API，失败回退 CLI）。"""
+        data = {
+            "name": name,
+            "soulFile": soul_file,
+            "model": model,
+            "runtime": runtime,
+            "skills": skills or [],
+            "mcpServers": mcp_servers or [],
+        }
+        code, stdout, stderr = await AgtCLI._http_fallback(
+            ("create", "worker", "--name", name, "--soul-file", soul_file,
+             "--model", model, "--runtime", runtime),
+            "workers", method="POST", data=data, timeout=30,
+        )
         return code == 0
 
     async def update_worker(
@@ -338,24 +431,38 @@ class AgentTeamsClient(MatrixClientMixin):
         skills: list[str] | None = None,
         state: str = "",
     ) -> bool:
-        """更新 Worker 配置。"""
-        args = ["update", "worker", "--name", name]
+        """更新 Worker 配置（优先 HTTP API，失败回退 CLI）。"""
+        data: dict[str, Any] = {}
         if model:
-            args.extend(["--model", model])
+            data["model"] = model
         if soul_file:
-            args.extend(["--soul-file", soul_file])
+            data["soulFile"] = soul_file
+        if skills:
+            data["skills"] = skills
+        if state:
+            data["state"] = state
+
+        cli_args = ["update", "worker", "--name", name]
+        if model:
+            cli_args.extend(["--model", model])
+        if soul_file:
+            cli_args.extend(["--soul-file", soul_file])
         if skills:
             for s in skills:
-                args.extend(["--skills", s])
+                cli_args.extend(["--skills", s])
         if state:
-            args.extend(["--state", state])
+            cli_args.extend(["--state", state])
 
-        code, _, _ = await AgtCLI.run(*args, timeout=30)
+        code, _, _ = await AgtCLI._http_fallback(
+            tuple(cli_args), f"workers/{name}", method="POST", data=data, timeout=30,
+        )
         return code == 0
 
     async def delete_worker(self, name: str) -> bool:
-        """删除 Worker。"""
-        code, _, _ = await AgtCLI.run("delete", "worker", "--name", name)
+        """删除 Worker（优先 HTTP API，失败回退 CLI）。"""
+        code, _, _ = await AgtCLI._http_fallback(
+            ("delete", "worker", "--name", name), f"workers/{name}", method="DELETE", timeout=30,
+        )
         return code == 0
 
     # ------------------------------------------------------------------ #
@@ -397,7 +504,7 @@ class AgentTeamsClient(MatrixClientMixin):
         pipeline: list[str] | None = None,
         manager: str = "default",
     ) -> TaskInfo:
-        """创建一个 PDCA 任务并派发给 Manager（通过 Matrix DM 房间）。
+        """创建一个任务并派发给 Manager（通过 Matrix DM 房间）。
 
         AgentTeams 的任务派发走 Matrix 协议（官方 replay-task.sh 的做法）：
           1. admin 登录 Matrix
@@ -407,7 +514,7 @@ class AgentTeamsClient(MatrixClientMixin):
 
         Args:
             spec: 任务规格（自然语言描述）
-            pipeline: PDCA 流水线 Worker 列表（默认 6 个）
+            pipeline: PDCA 流水线 Worker 列表（默认一套完整班子）
             manager: Manager 名称（Matrix 用户 localpart）
 
         Returns:
@@ -420,18 +527,21 @@ class AgentTeamsClient(MatrixClientMixin):
         task_id = uuid.uuid4().hex[:12]
         task_tag = f"<!-- TASK_ID:{task_id} -->"
 
-        # 构造 PDCA 任务上下文（含里程碑握手协议 + 末尾隐藏 task_id 标记）
+        # 构造任务上下文（含里程碑握手协议 + 末尾隐藏 task_id 标记）
+        # 2026-08-16 重构：统一「交给 Leader 编排一套班子」，不再有修复/搭建双模式
         task_context = (
-            f"【PDCA 闭环任务】\n\n"
+            f"【研发闭环任务】\n\n"
             f"任务规格：\n{spec}\n\n"
-            f"流水线：{' → '.join(pipeline)}\n\n"
-            f"请按以下研发团队接力流程执行，每个 Worker 完成后 @mention 下一个并输出对应里程碑词：\n"
-            f"- aggregator → TASK_SPEC_READY → @rootcause\n"
-            f"- rootcause  → ROOT_CAUSE_FOUND → @fixer\n"
-            f"- fixer      → FIX_APPLIED → @tester\n"
-            f"- tester     → TEST_PASSED → @releaser（失败则 TEST_FAILED → @fixer）\n"
-            f"- releaser   → RELEASE_OK → @retrospector（失败则 RELEASE_ROLLED_BACK → @fixer）\n"
-            f"- retrospector → RETROSPECT_DONE → @manager（闭环结束）\n\n"
+            f"【一套班子】团队：{'、'.join(self.PDCA_WORKERS)}\n\n"
+            f"请由 Leader（固定编排者）按阶段从这套班子里挑选员工参与，"
+            f"每个员工完成后 @mention 下一阶段并输出对应里程碑词：\n"
+            f"- aggregator（产品经理）→ TASK_SPEC_READY → 下一阶段\n"
+            f"- rootcause（架构师）  → ROOT_CAUSE_FOUND → 下一阶段\n"
+            f"- frontend/backend/fixer（前端/后端/修理工）→ SITE_READY / BACKEND_READY / FIX_APPLIED → 下一阶段\n"
+            f"- tester（测试）      → TEST_PASSED → 下一阶段（失败则 TEST_FAILED → 打回对应员工）\n"
+            f"- releaser（DevOps）  → RELEASE_OK → 下一阶段（失败则 RELEASE_ROLLED_BACK → 打回）\n"
+            f"- retrospector（复盘）→ RETROSPECT_DONE → 闭环结束\n"
+            f"由 Leader 决定每个阶段参与的员工，协调员工间通信（如 Tester 向 Backend 要开发日志）。\n\n"
             f"{task_tag}"
         )
 
@@ -871,7 +981,9 @@ class AgentTeamsClient(MatrixClientMixin):
 
     async def _list_resource(self, resource: str) -> list[str]:
         """通用资源列表查询。"""
-        code, stdout, _ = await AgtCLI.run("get", resource)
+        code, stdout, _ = await AgtCLI._http_fallback(
+            ("get", resource), resource, timeout=30
+        )
         if code != 0:
             return []
         return re.findall(r"name:\s*(\S+)", stdout)

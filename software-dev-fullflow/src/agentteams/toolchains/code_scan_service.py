@@ -23,11 +23,16 @@ from __future__ import annotations
 import asyncio
 import os
 
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, Response
+
 from .core import (
     SCAN_STORE,
     _next_id,
     run_code_scan,
 )
+from .mcp_adapter import McpAdapter
 
 # ---- AgentScope 官方组件：用 FunctionTool 定义工具 ----
 from agentscope.tool import FunctionTool, Toolkit
@@ -145,9 +150,6 @@ def _register_tools_sync(tk: Toolkit) -> None:
 
 def build_app():
     """构建 FastAPI 应用。"""
-    from fastapi import FastAPI, HTTPException
-    from fastapi.middleware.cors import CORSMiddleware
-
     app = FastAPI(title="AgentTeams Code Scan Toolchain", version="1.0.0")
     app.add_middleware(
         CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
@@ -157,6 +159,49 @@ def build_app():
     tk = build_agentscope_toolkit()
     _register_tools_sync(tk)
     app.state.toolkit = tk
+
+    # ---- MCP 适配层 ----
+    mcp = McpAdapter(server_name="code-scan", server_version="1.0.0")
+    mcp.register_tool("start_scan", "提交一次代码扫描任务，返回扫描任务 ID",
+                      {"repo": {"type": "string", "description": "仓库名"},
+                       "branch": {"type": "string", "description": "分支，默认 main"}},
+                      ["repo"], tool_start_scan)
+    mcp.register_tool("get_scan_result", "查询指定代码扫描任务的执行结果与问题清单",
+                      {"scan_id": {"type": "string", "description": "扫描任务 ID"}},
+                      ["scan_id"], tool_get_scan_result)
+    mcp.register_tool("list_open_issues", "列出指定仓库当前未关闭的代码扫描问题",
+                      {"repo": {"type": "string", "description": "仓库名"},
+                       "severity": {"type": "string", "description": "严重级别过滤"}},
+                      ["repo"], tool_list_open_issues)
+    mcp.register_tool("get_issue_detail", "获取单个代码扫描问题的详情",
+                      {"issue_id": {"type": "string", "description": "问题 ID"}},
+                      ["issue_id"], tool_get_issue_detail)
+
+    _sessions: dict[str, str] = {}
+
+    @app.get("/mcp")
+    def mcp_get():
+        """MCP Streamable HTTP: 会话初始化。"""
+        session_id = mcp.create_session_id()
+        _sessions[session_id] = "active"
+        return JSONResponse(
+            content={"status": "ok", "server": "code-scan"},
+            headers={"Mcp-Session-Id": session_id},
+        )
+
+    @app.post("/mcp")
+    async def mcp_post(request: Request):
+        """MCP Streamable HTTP: JSON-RPC 消息处理。"""
+        body = await request.json()
+        result = mcp.handle_jsonrpc(body)
+        if result is None:
+            return Response(status_code=202)
+        return result
+
+    @app.delete("/mcp")
+    def mcp_delete():
+        """MCP Streamable HTTP: 会话终止。"""
+        return Response(status_code=204)
 
     @app.get("/health")
     def health():

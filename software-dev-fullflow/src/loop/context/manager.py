@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .budget import ContextBudget
+from .events import ContextEvent
 from .memory_tiers import (
     LongTermMemory,
     MediumTermMemory,
@@ -57,7 +58,7 @@ class ContextManager:
         """开始新的迭代周期。返回 False 表示不应继续。"""
         can_enter, reason = self.protocol.can_enter(self.budget)
         if not can_enter:
-            self.metrics.record("iteration_blocked", {"reason": reason})
+            self.metrics.record(ContextEvent.ITERATION_BLOCKED, {"reason": reason})
             return False
 
         self.protocol.advance_phase(IterationPhase.ENTRY)
@@ -82,7 +83,7 @@ class ContextManager:
             )
             self.budget.allocate_support(lessons_text)
 
-        self.metrics.record("iteration_started", {
+        self.metrics.record(ContextEvent.ITERATION_STARTED, {
             "iteration": self.protocol.current_iteration,
             "budget_snapshot": self.budget.snapshot(),
         })
@@ -92,7 +93,7 @@ class ContextManager:
         """结束当前迭代周期。"""
         self.protocol.advance_phase(IterationPhase.EXIT)
         self._persist_all_memory()
-        self.metrics.record("iteration_finished", {
+        self.metrics.record(ContextEvent.ITERATION_FINISHED, {
             "iteration": self.protocol.current_iteration,
             "budget_snapshot": self.budget.snapshot(),
             "protocol_snapshot": self.protocol.snapshot(),
@@ -165,7 +166,7 @@ class ContextManager:
         # 自动压缩
         if self.budget.needs_micro_compact:
             freed = self.budget.micro_compact()
-            self.metrics.record("micro_compact", {"tokens_freed": freed})
+            self.metrics.record(ContextEvent.MICRO_COMPACT, {"tokens_freed": freed})
 
         parts: list[str] = []
 
@@ -222,6 +223,46 @@ class ContextManager:
         """搜索长期记忆。"""
         return self.long_mem.search(category, query, top_k)
 
+    # ---- 稳定门面：对外只暴露语义化方法，不暴露内部子对象 ----
+    #
+    # 去耦合原则：调用方（如 agentteams_loop / dashboard）不得直接触碰
+    # `ctx.long_mem` / `ctx.protocol` / `ctx.metrics` / `ctx.snapshot()['budget']`
+    # 等内部结构。以下方法把对内部子组件的访问封装为稳定的语义接口，
+    # 便于 ContextManager 内部重构而不破坏外部契约。
+
+    def create_semantic_searcher(self):
+        """创建基于本管理器长期记忆的语义检索器。
+
+        返回 SemanticMemorySearch（作用于内部 LongTermMemory），
+        调用方无需再直接访问 `ctx.long_mem`。
+        """
+        from .semantic_search import SemanticMemorySearch
+        return SemanticMemorySearch(self.long_mem)
+
+    def current_iteration(self) -> int:
+        """返回当前迭代序号（封装 protocol）。"""
+        return self.protocol.current_iteration
+
+    def protocol_snapshot(self) -> dict[str, Any]:
+        """返回迭代协议快照。"""
+        return self.protocol.snapshot()
+
+    def budget_snapshot(self) -> dict[str, Any]:
+        """返回上下文预算快照。"""
+        return self.budget.snapshot()
+
+    def metrics_report(self) -> str:
+        """返回性能指标可读报告（封装 metrics）。"""
+        return self.metrics.report()
+
+    def metrics_snapshot(self) -> dict[str, Any]:
+        """返回性能指标结构化快照。"""
+        return self.metrics.snapshot()
+
+    def metrics_health(self) -> tuple[bool, list[str]]:
+        """返回上下文工程健康检查结果。"""
+        return self.metrics.is_healthy()
+
     # ---- 内部 ----
 
     def _persist_all_memory(self) -> None:
@@ -229,7 +270,7 @@ class ContextManager:
         self.short_mem.save()
         self.medium_mem.save()
         self.long_mem.save_all()
-        self.metrics.record("memory_persisted", {
+        self.metrics.record(ContextEvent.MEMORY_PERSISTED, {
             "short": self.short_mem.snapshot(),
             "medium": self.medium_mem.snapshot(),
             "long": self.long_mem.snapshot(),
